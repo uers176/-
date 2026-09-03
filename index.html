@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Fruitwarp Ninja — 水果忍者</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;overflow:hidden;font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif}
+
+  /* Bright sunny gradient — far from the dark game screen */
+  body{
+    background:
+      radial-gradient(ellipse at 15% 20%, #fff4b8 0%, transparent 45%),
+      radial-gradient(ellipse at 85% 10%, #c2e9ff 0%, transparent 50%),
+      radial-gradient(ellipse at 50% 100%, #a8f0c6 0%, transparent 55%),
+      linear-gradient(135deg, #ffe29f 0%, #ffa99f 40%, #ffd3a5 100%);
+    background-attachment: fixed;
+    position: relative;
+  }
+
+  /* Soft drifting clouds */
+  .cloud{
+    position:fixed;
+    background:rgba(255,255,255,.85);
+    border-radius:50%;
+    filter:blur(18px);
+    pointer-events:none;
+  }
+  .cloud.c1{ width:220px; height:80px; top:8%;  left:-260px; animation: drift 38s linear infinite; }
+  .cloud.c2{ width:160px; height:55px; top:28%; left:-200px; animation: drift 52s linear infinite; animation-delay:-12s; }
+  .cloud.c3{ width:280px; height:90px; top:62%; left:-320px; animation: drift 60s linear infinite; animation-delay:-28s; }
+  .cloud.c4{ width:130px; height:45px; top:82%; left:-180px; animation: drift 46s linear infinite; animation-delay:-20s; }
+  @keyframes drift{
+    from{ transform:translateX(0) }
+    to  { transform:translateX(calc(100vw + 400px)) }
+  }
+
+  /* Floating fruits — slow bob & gentle rotation */
+  .fruit{
+    position:fixed;
+    font-size:54px;
+    pointer-events:none;
+    filter: drop-shadow(0 8px 16px rgba(0,0,0,.12));
+    animation: bob 4.2s ease-in-out infinite;
+  }
+  .fruit::after{
+    content: "";
+    position:absolute;
+    left:50%; top:100%;
+    transform:translate(-50%, 8px) scaleX(.6);
+    width:1em; height:14px;
+    background:rgba(0,0,0,.12);
+    border-radius:50%;
+    filter:blur(4px);
+    animation: shadow 4.2s ease-in-out infinite;
+  }
+  @keyframes bob{
+    0%,100%{ transform:translateY(0) rotate(-4deg) }
+    50%    { transform:translateY(-18px) rotate(4deg) }
+  }
+  @keyframes shadow{
+    0%,100%{ transform:translate(-50%, 8px) scaleX(.6); opacity:.7 }
+    50%    { transform:translate(-50%, 8px) scaleX(.9); opacity:.4 }
+  }
+  /* Each fruit has its own starting spot + speed/phase */
+  .f1{ top:14%; left:8%;  font-size:72px; animation-duration:4.4s; animation-delay:-.2s; content:"🍎" }
+  .f2{ top:22%; right:10%; font-size:64px; animation-duration:4.8s; animation-delay:-1.6s; content:"🍊" }
+  .f3{ top:55%; left:5%;  font-size:58px; animation-duration:5.2s; animation-delay:-.8s; content:"🍋" }
+  .f4{ top:68%; right:7%; font-size:70px; animation-duration:4.0s; animation-delay:-2.2s; content:"🍉" }
+  .f5{ top:40%; left:18%; font-size:48px; animation-duration:5.8s; animation-delay:-3.0s; content:"🥭" }
+  .f6{ top:78%; right:20%; font-size:52px; animation-duration:4.6s; animation-delay:-1.2s; content:"🍓" }
+  .f7{ top:8%;  right:30%; font-size:46px; animation-duration:5.0s; animation-delay:-2.6s; content:"🫐" }
+
+  /* Center content card */
+  .center{
+    position:fixed; inset:0;
+    display:grid; place-items:center;
+    z-index: 10;
+  }
+  .card{
+    background:rgba(255,255,255,.78);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+    border-radius: 28px;
+    padding: 48px 56px;
+    box-shadow:
+      0 20px 60px rgba(255, 120, 80, .22),
+      0 2px 0 rgba(255,255,255,.8) inset,
+      0 -2px 12px rgba(255, 200, 120, .18) inset;
+    border: 1px solid rgba(255,255,255,.7);
+    text-align:center;
+    max-width: 560px;
+    width: calc(100vw - 40px);
+    animation: pop .5s cubic-bezier(.2,.9,.3,1.4);
+  }
+  @keyframes pop{
+    from{ opacity:0; transform:translateY(20px) scale(.96) }
+    to  { opacity:1; transform:none }
+  }
+  h1{
+    font-size: clamp(36px, 7vw, 58px);
+    font-weight: 900;
+    letter-spacing: -0.02em;
+    background: linear-gradient(135deg, #ff6a3d 0%, #ffb547 50%, #3dd2ff 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    margin-bottom: 6px;
+    line-height: 1.05;
+  }
+  .subtitle{
+    color:#6d5a42;
+    font-size: 15px;
+    letter-spacing: .02em;
+    margin-bottom: 28px;
+  }
+  .subtitle b{ color:#ff6a3d; font-weight:700 }
+
+  .btn{
+    display: inline-flex;
+    align-items: center; gap: 10px;
+    padding: 16px 42px;
+    font-size: 20px;
+    font-weight: 800;
+    color: white;
+    border: none;
+    border-radius: 999px;
+    background: linear-gradient(135deg, #ff6a3d 0%, #ff9a3d 60%, #ffb547 100%);
+    box-shadow:
+      0 10px 24px rgba(255,106,61,.38),
+      0 4px 0 #e24a1f,
+      0 0 0 4px rgba(255,181,71,.25);
+    cursor: pointer;
+    text-decoration:none;
+    transition: transform .15s ease, box-shadow .15s ease, filter .15s ease;
+    font-family: inherit;
+  }
+  .btn:hover{ transform: translateY(-2px); filter:brightness(1.05); box-shadow:0 14px 28px rgba(255,106,61,.45),0 6px 0 #e24a1f,0 0 0 6px rgba(255,181,71,.22); }
+  .btn:active{ transform: translateY(2px); box-shadow:0 4px 10px rgba(255,106,61,.35),0 2px 0 #e24a1f,0 0 0 2px rgba(255,181,71,.2); }
+  .btn .icon{ font-size: 24px }
+
+  .hint{
+    margin-top: 22px;
+    font-size: 13px;
+    color: #8a7a62;
+    display:flex; justify-content:center; gap: 20px; flex-wrap:wrap;
+  }
+  .hint span{ display:inline-flex; align-items:center; gap:6px }
+
+  /* small decor dots */
+  .dots{ margin-top: 26px; display:flex; justify-content:center; gap:8px }
+  .dots span{ width:8px; height:8px; border-radius:50%; background:rgba(255,106,61,.45) }
+  .dots span:nth-child(2){ background:rgba(61,210,255,.55) }
+  .dots span:nth-child(3){ background:rgba(255,181,71,.7) }
+
+  footer{
+    position:fixed; bottom: 12px; left:0; right:0;
+    text-align:center; font-size:11px; color: rgba(0,0,0,.25);
+    z-index: 5;
+  }
+</style>
+</head>
+<body>
+  <!-- Drifting clouds -->
+  <div class="cloud c1"></div>
+  <div class="cloud c2"></div>
+  <div class="cloud c3"></div>
+  <div class="cloud c4"></div>
+
+  <!-- Floating fruits -->
+  <div class="fruit f1"></div>
+  <div class="fruit f2"></div>
+  <div class="fruit f3"></div>
+  <div class="fruit f4"></div>
+  <div class="fruit f5"></div>
+  <div class="fruit f6"></div>
+  <div class="fruit f7"></div>
+
+  <div class="center">
+    <div class="card">
+      <h1>Fruitwarp<br>Ninja</h1>
+      <p class="subtitle">用手势 ✋ 或鼠标 🖱 <b>切开飞起来的水果</b>，达成目标分数通关！</p>
+      <a class="btn" href="fruitwarp-ninja.html">
+        <span class="icon">🍉</span>
+        <span>开始游戏</span>
+        <span class="icon">→</span>
+      </a>
+      <div class="dots"><span></span><span></span><span></span></div>
+      <div class="hint">
+        <span>🎯 切水果得分</span>
+        <span>💣 别碰炸弹</span>
+        <span>🔥 连击翻倍</span>
+      </div>
+    </div>
+  </div>
+
+  <footer>Fruitwarp Ninja — HTML5 Canvas · Three.js · MediaPipe Hand Gestures</footer>
+</body>
+</html>

@@ -1,0 +1,2770 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Fruitwarp Ninja — Hand Gesture Slice</title>
+  <style>
+    :root{
+      --bg:#000;
+      --hud: rgba(180, 240, 255, .92);
+      --hud2: rgba(180, 240, 255, .55);
+      --line: rgba(180, 240, 255, .18);
+      --grid: rgba(180, 240, 255, .08);
+      --ok: rgba(110, 255, 220, .95);
+      --warn: rgba(255, 200, 120, .95);
+      --bad: rgba(255, 120, 120, .95);
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      --sans: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+    }
+
+    html, body {
+      height: 100%;
+      margin: 0;
+      background: transparent;
+      overflow: hidden;
+      color: white;
+      user-select: none;
+      -webkit-user-select: none;
+      touch-action: none;
+    }
+
+    /* Wallpaper video: the actual visible dynamic background layer.
+       Sits BEHIND the transparent Three.js canvas so the browser can
+       natively decode + play mp4 (far more reliable than THREE.VideoTexture
+       which needs special pixel-format plumbing per GPU). */
+    #wallpaperVideo {
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 100vh;
+      object-fit: cover;
+      z-index: -1;
+      pointer-events: none;
+      background: #000;
+    }
+    /* Subtle dark tint overlay so HUD text & fruits pop better,
+       plus the bottom 12% watermark crop (豆包 AI 生成 black bar). */
+    #wallpaperTint {
+      position: fixed; inset: 0;
+      z-index: 0; pointer-events: none;
+      background: rgba(5,7,15,.55);
+    }
+    #wallpaperWm {
+      position: fixed;
+      left: 0; right: 0; bottom: 0;
+      height: 12%;
+      background: #000;
+      z-index: 0; pointer-events: none;
+    }
+
+    #stage { position: fixed; inset: 0; background: transparent; z-index: 1; }
+    canvas#gl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+
+    /* ===== HUD ===== */
+    #hud {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      font-family: var(--mono);
+      color: var(--hud);
+      mix-blend-mode: screen;
+    }
+    #hud .frame {
+      position: absolute;
+      inset: 16px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      box-shadow: 0 0 0 1px rgba(0,0,0,.35) inset, 0 0 22px rgba(110,255,220,.06);
+    }
+    #hud .grid {
+      position: absolute;
+      inset: 16px;
+      border-radius: 16px;
+      background:
+        linear-gradient(to right, var(--grid) 1px, transparent 1px) 0 0 / 40px 40px,
+        linear-gradient(to bottom, var(--grid) 1px, transparent 1px) 0 0 / 40px 40px;
+      opacity: .55;
+      mask-image: radial-gradient(circle at 50% 45%, rgba(0,0,0,1) 0%, rgba(0,0,0,.95) 40%, rgba(0,0,0,.2) 75%, rgba(0,0,0,0) 100%);
+    }
+    .corner { position: absolute; width: 34px; height: 34px; border: 2px solid var(--line); }
+    .tl { left: 16px; top: 16px; border-right: 0; border-bottom: 0; border-top-left-radius: 16px; }
+    .tr { right: 16px; top: 16px; border-left: 0; border-bottom: 0; border-top-right-radius: 16px; }
+    .bl { left: 16px; bottom: 16px; border-right: 0; border-top: 0; border-bottom-left-radius: 16px; }
+    .br { right: 16px; bottom: 16px; border-left: 0; border-top: 0; border-bottom-right-radius: 16px; }
+
+    #scanlines {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      background:
+        repeating-linear-gradient(
+          to bottom,
+          rgba(180,240,255,.08),
+          rgba(180,240,255,.08) 1px,
+          rgba(0,0,0,0) 5px,
+          rgba(0,0,0,0) 10px
+        );
+      mix-blend-mode: screen;
+      animation: scanMove 2.2s linear infinite;
+      transition: opacity .18s ease;
+    }
+    @keyframes scanMove{ 0%{ transform: translateY(-12%);} 100%{ transform: translateY(12%);} }
+    #hud.tracking #scanlines { opacity: .22; }
+
+    #status {
+      position: absolute;
+      left: 30px;
+      top: 28px;
+      display: grid;
+      gap: 10px;
+      max-width: min(720px, calc(100vw - 60px));
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 12px;
+      border-radius: 999px;
+      border: 1px solid rgba(180,240,255,.18);
+      background: rgba(6, 16, 22, .38);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      box-shadow: 0 0 18px rgba(110,255,220,.05);
+      font-size: 12px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: rgba(180,240,255,.92);
+    }
+    .dot {
+      width: 8px; height: 8px; border-radius: 999px;
+      background: var(--warn);
+      box-shadow: 0 0 12px rgba(255,200,120,.35);
+    }
+    .dot.ok { background: var(--ok); box-shadow: 0 0 14px rgba(110,255,220,.38); }
+    .dot.bad{ background: var(--bad); box-shadow: 0 0 14px rgba(255,120,120,.38); }
+
+    #readouts {
+      display: grid;
+      gap: 6px;
+      font-size: 11px;
+      color: rgba(180,240,255,.65);
+      letter-spacing: .07em;
+      text-transform: uppercase;
+    }
+    #readouts b { color: rgba(180,240,255,.92); font-weight: 700; }
+
+    #scoreboard {
+      position: absolute;
+      right: 30px;
+      top: 28px;
+      display: grid;
+      gap: 10px;
+      text-align: right;
+    }
+    #scoreboard .big {
+      font-size: 14px;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      color: rgba(255,255,255,.92);
+    }
+    #scoreboard .big span {
+      color: rgba(110,255,220,.95);
+      text-shadow: 0 0 14px rgba(110,255,220,.25);
+    }
+    #scoreboard .small {
+      font-size: 11px;
+      color: rgba(180,240,255,.62);
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    /* camera frame */
+    #camWrap {
+      position: absolute;
+      right: 26px;
+      bottom: 26px;
+      width: 260px;
+      aspect-ratio: 4 / 3;
+      border-radius: 16px;
+      border: 1px solid rgba(180,240,255,.18);
+      box-shadow: 0 0 28px rgba(110,255,220,.08);
+      overflow: hidden;
+      background: rgba(0,0,0,.55);
+      pointer-events: none;
+    }
+    #camWrap .label, #camWrap .blade {
+      position: absolute;
+      top: 10px;
+      font-size: 10px;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      background: rgba(0,0,0,.35);
+      border: 1px solid rgba(180,240,255,.14);
+      padding: 6px 8px;
+      border-radius: 999px;
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      z-index: 3;
+    }
+    #camWrap .label { left: 10px; color: rgba(180,240,255,.82); }
+    #camWrap .blade { right: 10px; color: rgba(255,255,255,.85); }
+    video#cam {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      object-fit: cover;
+      transform: scaleX(-1);
+      opacity: .92;
+      filter: contrast(108%) saturate(110%) brightness(1.02);
+    }
+    canvas#camOverlay {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      z-index: 2;
+      pointer-events: none;
+    }
+    #camWrap .scan {
+      position: absolute;
+      inset: -30% -10%;
+      opacity: 0;
+      background: linear-gradient(to bottom, transparent, rgba(110,255,220,.14), transparent);
+      transform: translateY(-120%);
+      z-index: 1;
+    }
+    #hud.tracking #camWrap .scan{
+      opacity: .75;
+      animation: camSweep 1.35s linear infinite;
+    }
+    @keyframes camSweep { 0%{ transform: translateY(-120%);} 100%{ transform: translateY(200%);} }
+
+    /* start overlay */
+    #overlay {
+      position: fixed; inset: 0;
+      display: grid; place-items: center;
+      pointer-events: auto;
+      background: radial-gradient(circle at 50% 40%, rgba(110,255,220,.10), rgba(0,0,0,.92) 55%, rgba(0,0,0,1) 100%);
+    }
+    #card {
+      width: min(760px, calc(100vw - 40px));
+      border-radius: 18px;
+      border: 1px solid rgba(180,240,255,.18);
+      background: rgba(0,0,0,.48);
+      box-shadow: 0 0 48px rgba(110,255,220,.08);
+      padding: 18px 18px 16px;
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      font-family: var(--sans);
+      color: rgba(255,255,255,.90);
+    }
+    #card h1{ margin: 0 0 10px; font-size: 20px; font-weight: 700; }
+    #card p{ margin: 8px 0; font-size: 13px; line-height: 1.5; color: rgba(255,255,255,.72); }
+    #card .row{ display:flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; align-items: center; justify-content: space-between; }
+    #startBtn{
+      pointer-events: auto;
+      cursor: pointer;
+      border: 1px solid rgba(110,255,220,.35);
+      background: rgba(110,255,220,.10);
+      color: rgba(255,255,255,.92);
+      border-radius: 14px;
+      padding: 12px 14px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      box-shadow: 0 0 24px rgba(110,255,220,.10);
+      transition: transform .15s ease, background .15s ease;
+    }
+    #startBtn:hover{ transform: translateY(-1px); background: rgba(110,255,220,.14); }
+    #startBtn:active{ transform: translateY(0px); }
+    #note { font-family: var(--mono); font-size: 11px; color: rgba(180,240,255,.65); letter-spacing: .05em; }
+    #note code{
+      color: rgba(180,240,255,.90);
+      background: rgba(180,240,255,.08);
+      border: 1px solid rgba(180,240,255,.10);
+      padding: 1px 6px;
+      border-radius: 10px;
+    }
+    #banner {
+      margin-top: 10px;
+      display: none;
+      font-family: var(--mono);
+      font-size: 12px;
+      color: rgba(255,255,255,.86);
+      border: 1px solid rgba(255,200,120,.25);
+      background: rgba(40, 20, 0, .35);
+      padding: 10px 12px;
+      border-radius: 14px;
+    }
+    #banner strong{ color: rgba(255,200,120,.95); }
+
+    /* ===== Difficulty selector ===== */
+    #difficultySection {
+      margin-top: 16px;
+      padding-top: 14px;
+      border-top: 1px solid rgba(180,240,255,.12);
+    }
+    #difficultyLabel {
+      font-size: 12px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: rgba(180,240,255,.65);
+      font-family: var(--mono);
+      margin-bottom: 10px;
+    }
+    .diff-group {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .diff-btn {
+      cursor: pointer;
+      border: 1px solid rgba(180,240,255,.18);
+      background: rgba(180,240,255,.04);
+      color: rgba(180,240,255,.75);
+      border-radius: 12px;
+      padding: 10px 14px;
+      font-family: var(--mono);
+      font-size: 12px;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      transition: all .15s ease;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 4px;
+      min-width: 140px;
+    }
+    .diff-btn:hover {
+      background: rgba(180,240,255,.08);
+      border-color: rgba(180,240,255,.28);
+    }
+    .diff-btn.active {
+      background: rgba(110,255,220,.14);
+      border-color: rgba(110,255,220,.45);
+      color: rgba(110,255,220,.95);
+      box-shadow: 0 0 20px rgba(110,255,220,.10);
+    }
+    .diff-btn .diff-title {
+      font-weight: 700;
+      font-size: 13px;
+    }
+    .diff-btn .diff-desc {
+      font-size: 10px;
+      opacity: .70;
+      letter-spacing: .02em;
+      text-transform: none;
+      line-height: 1.4;
+    }
+
+    /* Sound toggle */
+    #soundToggle {
+      cursor: pointer;
+      border: 1px solid rgba(180,240,255,.18);
+      background: rgba(180,240,255,.04);
+      color: rgba(180,240,255,.75);
+      border-radius: 999px;
+      padding: 8px 12px;
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      transition: all .15s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    #soundToggle:hover {
+      background: rgba(180,240,255,.08);
+    }
+    #soundToggle.on {
+      background: rgba(110,255,220,.12);
+      border-color: rgba(110,255,220,.40);
+      color: rgba(110,255,220,.95);
+    }
+
+    /* hit flash */
+    #flash {
+      position: fixed; inset: 0;
+      pointer-events: none;
+      opacity: 0;
+      background: radial-gradient(circle at 50% 45%, rgba(255,255,255,.22), rgba(110,255,220,.09) 18%, rgba(0,0,0,0) 52%);
+      transition: opacity .10s ease;
+      mix-blend-mode: screen;
+    }
+    #flash.on { opacity: 1; }
+
+    /* game over */
+    #gameOver {
+      position: fixed; inset: 0;
+      display: none; place-items: center;
+      pointer-events: auto;
+      background: radial-gradient(circle at 50% 40%, rgba(255,120,120,.10), rgba(0,0,0,.92) 60%, rgba(0,0,0,1) 100%);
+      font-family: var(--sans);
+    }
+    #gameOver .box{
+      width: min(560px, calc(100vw - 40px));
+      border-radius: 18px;
+      border: 1px solid rgba(255,255,255,.12);
+      background: rgba(0,0,0,.50);
+      box-shadow: 0 0 42px rgba(255,120,120,.10);
+      padding: 18px 18px 16px;
+      color: rgba(255,255,255,.90);
+    }
+    #gameOver .box h2{ margin: 0 0 10px; }
+    #gameOverStats {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px 16px;
+      margin-top: 8px;
+      font-size: 13px;
+      opacity: .85;
+      line-height: 1.6;
+    }
+    #gameOverStats .label { color: rgba(180,240,255,.62); font-family: var(--mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; }
+    #gameOverStats .val { color: rgba(255,255,255,.92); font-weight: 700; }
+    #gameOverActions {
+      margin-top: 16px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    #restartBtn{
+      cursor:pointer;
+      border: 1px solid rgba(110,255,220,.35);
+      background: rgba(110,255,220,.10);
+      color: rgba(255,255,255,.92);
+      border-radius: 14px;
+      padding: 10px 14px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      transition: transform .15s ease, background .15s ease;
+    }
+    #restartBtn:hover{ transform: translateY(-1px); background: rgba(110,255,220,.14); }
+    #menuBtn{
+      cursor:pointer;
+      border: 1px solid rgba(180,240,255,.18);
+      background: rgba(180,240,255,.08);
+      color: rgba(255,255,255,.92);
+      border-radius: 14px;
+      padding: 10px 14px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    /* Floating combo popup */
+    .combo-pop {
+      position: fixed;
+      pointer-events: none;
+      font-family: var(--mono);
+      font-weight: 900;
+      font-size: 32px;
+      letter-spacing: .10em;
+      text-transform: uppercase;
+      color: rgba(110,255,220,.98);
+      text-shadow: 0 0 20px rgba(110,255,220,.55), 0 2px 0 rgba(0,0,0,.4);
+      z-index: 999;
+      animation: comboRise .85s cubic-bezier(.2,.7,.2,1) forwards;
+    }
+    @keyframes comboRise {
+      0%   { opacity: 0; transform: translate(-50%, 0) scale(.7); }
+      15%  { opacity: 1; transform: translate(-50%, -18px) scale(1.15); }
+      60%  { opacity: 1; transform: translate(-50%, -50px) scale(1.0); }
+      100% { opacity: 0; transform: translate(-50%, -90px) scale(.92); }
+    }
+
+    @media (max-width: 720px){
+      #camWrap{ width: 200px; right: 18px; bottom: 18px; }
+      #status{ left: 20px; top: 20px; }
+      #scoreboard{ right: 20px; top: 20px; }
+      .diff-btn { min-width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <!-- ================================================================ -->
+  <!-- Wallpaper layers: rendered by the BROWSER (not Three.js) so      -->
+  <!-- the mp4 videos always decode+play reliably. Three.js canvas is    -->
+  <!-- transparent and sits ON TOP of these layers.                      -->
+  <!-- ================================================================ -->
+  <video id="wallpaperVideo" playsinline webkit-playsinline muted loop preload="auto" autoplay></video>
+  <div id="wallpaperTint"></div>
+  <div id="wallpaperWm"></div>
+
+  <div id="stage">
+    <canvas id="gl"></canvas>
+
+    <div id="hud">
+      <div id="scanlines"></div>
+      <div class="frame"></div>
+      <div class="grid"></div>
+      <div class="corner tl"></div>
+      <div class="corner tr"></div>
+      <div class="corner bl"></div>
+      <div class="corner br"></div>
+
+      <div id="status">
+        <div class="pill"><span class="dot" id="dot"></span><span id="scanText">SCANNER IDLE</span></div>
+        <div id="readouts">
+          <div>Blade: <b id="bladeState">OFF</b> · Gesture: <b id="gestureText">—</b></div>
+          <div>Combo: <b id="comboText">x1</b> · Miss: <b id="missText">0/3</b></div>
+          <div>Difficulty: <b id="diffText">NORMAL</b></div>
+          <div>Detect: <b id="detectStats">— ms</b></div>
+        </div>
+      </div>
+
+      <div id="scoreboard">
+        <div class="big">Score <span id="scoreText">0</span></div>
+        <div class="small" id="fpsText">— fps</div>
+        <div class="small" style="opacity:.86;margin-top:.25em">⭐ 点数: <b id="pointsText">0</b> · 🎯 练习: <span id="practiceStats">—</span></div>
+        <button id="soundToggle" class="on" style="pointer-events:auto;margin-top:4px">🔊 Sound ON</button>
+      </div>
+
+      <div id="camWrap">
+        <div class="scan"></div>
+        <div class="label">CAM</div>
+        <div class="blade" id="camBlade">BLADE OFF</div>
+        <video id="cam" autoplay playsinline muted></video>
+        <canvas id="camOverlay"></canvas>
+      </div>
+    </div>
+
+    <div id="flash"></div>
+
+    <div id="overlay">
+      <div id="card">
+        <h1>Fruitwarp Ninja · 手势切割水果</h1>
+        <p>用你的手当"光刀"。挥动食指切水果，避免切到炸弹。</p>
+        <p><b>刀开关：</b><code>张开手掌</code> = ON · <code>握拳</code> = OFF（防误切）</p>
+
+        <div id="difficultySection">
+          <div id="difficultyLabel">选择难度 · Difficulty</div>
+          <div class="diff-group">
+            <button class="diff-btn" data-diff="easy">
+              <span class="diff-title">🌱 Easy</span>
+              <span class="diff-desc">慢速 · 炸弹少 · 5 次漏过机会</span>
+            </button>
+            <button class="diff-btn active" data-diff="normal">
+              <span class="diff-title">⚔️ Normal</span>
+              <span class="diff-desc">平衡 · 标准炸弹率 · 3 次漏过</span>
+            </button>
+            <button class="diff-btn" data-diff="hard">
+              <span class="diff-title">🔥 Hard</span>
+              <span class="diff-desc">高速 · 多炸弹 · 仅 2 次漏过</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="row">
+          <div style="margin:1.1em 0 .35em;display:flex;gap:.6em;flex-wrap:wrap;justify-content:center;font-size:.8em;opacity:.94"><span style="padding:.3em .7em;border:1px solid rgba(110,255,220,.3);border-radius:2em">📷 摄像头手势 · 开掌=光刀ON · 握拳=OFF</span><span style="padding:.3em .7em;border:1px solid rgba(255,200,120,.35);border-radius:2em">🖱 鼠标兜底 · 按住左键移动=光刀（手势不好用时直接鼠标）</span></div>
+        <p style="opacity:.82;margin:.2em 0 .9em;line-height:1.55;font-size:.92em">💡 教程：快速挥<b>食指</b>切水果，小心炸弹💣！（参考 gleeful-pika V2.5 多模式 · flourishing 音效创意 · gummy 点数面板）</p>
+<button id="startBtn">START · ENABLE CAMERA</button>
+          <div id="note">相机通常需要 <code>https</code> 或 <code>http://localhost</code> 才能授权。</div>
+        </div>
+        <div id="banner"></div>
+      </div>
+    </div>
+
+    <div id="gameOver">
+      <div class="box">
+        <h2 id="gameOverTitle">GAME OVER</h2>
+        <div id="gameOverStats">
+          <div>
+            <div class="label">Final Score</div>
+            <div class="val" id="finalScore">0</div>
+          </div>
+          <div>
+            <div class="label">Best Combo</div>
+            <div class="val" id="bestCombo">x1</div>
+          </div>
+          <div>
+            <div class="label">Difficulty</div>
+            <div class="val" id="finalDiff">NORMAL</div>
+          </div>
+          <div>
+            <div class="label">Slices</div>
+            <div class="val" id="finalSlices">0</div>
+          </div>
+        </div>
+        <div id="gameOverActions">
+          <button id="restartBtn">RESTART</button>
+          <button id="menuBtn">MAIN MENU</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    import * as THREE from "https://cdn.jsdelivr.net/npm/three@latest/build/three.module.js";
+    import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest";
+
+    // ============================================================
+    // DIFFICULTY PRESETS
+    // ============================================================
+    const DIFFICULTIES = {
+      easy: {
+        label: "EASY",
+        GRAVITY: -1.70,
+        LAUNCH_VY_MIN: 1.80,
+        LAUNCH_VY_MAX: 2.40,
+        LAUNCH_VX: 0.45,
+        SPAWN_BASE: 1.35,
+        SPAWN_MIN: 0.70,
+        DIFFICULTY_RAMP: 0.993,
+        MULTI_CHANCE: 0.10,
+        BOMB_CHANCE: 0.04,
+        MISS_MAX: 5,
+        FRUIT_R_MIN: 0.13,
+        FRUIT_R_MAX: 0.17,
+        SLICE_SPEED_MIN: 0.30,
+        TOP_MARGIN: 0.02,
+        SCORE_MUL: 1,
+        GOAL_SCORE: 500,
+      },
+      normal: {
+        label: "NORMAL",
+        GRAVITY: -2.10,
+        LAUNCH_VY_MIN: 2.10,
+        LAUNCH_VY_MAX: 2.85,
+        LAUNCH_VX: 0.62,
+        SPAWN_BASE: 1.00,
+        SPAWN_MIN: 0.48,
+        DIFFICULTY_RAMP: 0.988,
+        MULTI_CHANCE: 0.20,
+        BOMB_CHANCE: 0.10,
+        MISS_MAX: 3,
+        FRUIT_R_MIN: 0.11,
+        FRUIT_R_MAX: 0.15,
+        SLICE_SPEED_MIN: 0.40,
+        TOP_MARGIN: 0.02,
+        SCORE_MUL: 1,
+        GOAL_SCORE: 800,
+      },
+      hard: {
+        label: "HARD",
+        GRAVITY: -2.55,
+        LAUNCH_VY_MIN: 2.50,
+        LAUNCH_VY_MAX: 3.30,
+        LAUNCH_VX: 0.82,
+        SPAWN_BASE: 0.78,
+        SPAWN_MIN: 0.30,
+        DIFFICULTY_RAMP: 0.982,
+        MULTI_CHANCE: 0.32,
+        BOMB_CHANCE: 0.18,
+        MISS_MAX: 2,
+        FRUIT_R_MIN: 0.09,
+        FRUIT_R_MAX: 0.13,
+        SLICE_SPEED_MIN: 0.50,
+        TOP_MARGIN: 0.02,
+        SCORE_MUL: 1.5,
+        GOAL_SCORE: 1200,
+      },
+    };
+
+    // ============================================================
+    // WEB AUDIO SFX SYSTEM (procedural, no external files)
+    // ============================================================
+    const SFX = {
+      ctx: null,
+      master: null,
+      enabled: true,
+
+      init() {
+        if (this.ctx) return;
+        try {
+          const AC = window.AudioContext || window.webkitAudioContext;
+          this.ctx = new AC();
+          this.master = this.ctx.createGain();
+          this.master.gain.value = 0.5;
+          this.master.connect(this.ctx.destination);
+        } catch (e) {
+          console.warn("WebAudio unavailable:", e);
+          this.enabled = false;
+        }
+      },
+
+      resume() {
+        if (this.ctx && this.ctx.state === "suspended") {
+          this.ctx.resume().catch(() => {});
+        }
+      },
+
+      setEnabled(v) {
+        this.enabled = !!v;
+        if (this.master) this.master.gain.value = this.enabled ? 0.5 : 0;
+      },
+
+      _env(node, t0, attack, decay, peak = 1, sustain = 0) {
+        const g = node.gain ? node.gain : node;
+        const t = t0;
+        g.cancelScheduledValues(t - 0.01);
+        g.setValueAtTime(0, t);
+        g.linearRampToValueAtTime(peak, t + attack);
+        g.linearRampToValueAtTime(sustain, t + attack + decay * 0.5);
+      },
+
+      // Slice fruit — bright "swish + crack"
+      playSlice(intensity = 1) {
+        if (!this.enabled || !this.ctx) return;
+        const ctx = this.ctx;
+        const now = ctx.currentTime;
+
+        // Noise burst (swoosh)
+        const bufSize = Math.floor(ctx.sampleRate * 0.18);
+        const noiseBuf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+        const d = noiseBuf.getChannelData(0);
+        for (let i = 0; i < bufSize; i++) {
+          d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / bufSize, 2.2);
+        }
+        const src = ctx.createBufferSource();
+        src.buffer = noiseBuf;
+        const bp = ctx.createBiquadFilter();
+        bp.type = "bandpass";
+        bp.frequency.value = 1800 + intensity * 600;
+        bp.Q.value = 1.8;
+        const g = ctx.createGain();
+        g.gain.value = 0.35 * intensity;
+        src.connect(bp); bp.connect(g); g.connect(this.master);
+        src.start(now);
+
+        // Tonal chip
+        const osc = ctx.createOscillator();
+        osc.type = "triangle";
+        osc.frequency.setValueAtTime(880, now);
+        osc.frequency.exponentialRampToValueAtTime(420, now + 0.12);
+        const og = ctx.createGain();
+        this._env(og, now, 0.005, 0.12, 0.22 * intensity);
+        osc.connect(og); og.connect(this.master);
+        osc.start(now);
+        osc.stop(now + 0.14);
+      },
+
+      // Miss / drop fruit — low thud
+      playMiss() {
+        if (!this.enabled || !this.ctx) return;
+        const ctx = this.ctx;
+        const now = ctx.currentTime;
+        const osc = ctx.createOscillator();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(260, now);
+        osc.frequency.exponentialRampToValueAtTime(80, now + 0.22);
+        const g = ctx.createGain();
+        this._env(g, now, 0.01, 0.22, 0.32);
+        osc.connect(g); g.connect(this.master);
+        osc.start(now);
+        osc.stop(now + 0.25);
+      },
+
+      // Bomb explode — big noise boom + low rumble
+      playBomb() {
+        if (!this.enabled || !this.ctx) return;
+        const ctx = this.ctx;
+        const now = ctx.currentTime;
+
+        // Noise burst
+        const bufSize = Math.floor(ctx.sampleRate * 0.9);
+        const nb = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+        const d = nb.getChannelData(0);
+        for (let i = 0; i < bufSize; i++) {
+          d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / bufSize, 1.4);
+        }
+        const src = ctx.createBufferSource();
+        src.buffer = nb;
+        const lp = ctx.createBiquadFilter();
+        lp.type = "lowpass";
+        lp.frequency.setValueAtTime(1200, now);
+        lp.frequency.exponentialRampToValueAtTime(180, now + 0.7);
+        const ng = ctx.createGain();
+        ng.gain.setValueAtTime(0.6, now);
+        ng.gain.exponentialRampToValueAtTime(0.001, now + 0.9);
+        src.connect(lp); lp.connect(ng); ng.connect(this.master);
+        src.start(now);
+
+        // Sub-bass thump
+        const osc = ctx.createOscillator();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(110, now);
+        osc.frequency.exponentialRampToValueAtTime(40, now + 0.5);
+        const og = ctx.createGain();
+        this._env(og, now, 0.01, 0.5, 0.55);
+        osc.connect(og); og.connect(this.master);
+        osc.start(now);
+        osc.stop(now + 0.55);
+
+        // Mid crack
+        const osc2 = ctx.createOscillator();
+        osc2.type = "sawtooth";
+        osc2.frequency.setValueAtTime(420, now);
+        osc2.frequency.exponentialRampToValueAtTime(50, now + 0.18);
+        const og2 = ctx.createGain();
+        this._env(og2, now, 0.003, 0.2, 0.3);
+        osc2.connect(og2); og2.connect(this.master);
+        osc2.start(now);
+        osc2.stop(now + 0.22);
+      },
+
+      // Combo milestone — bright upward arpeggio
+      playCombo(level) {
+        if (!this.enabled || !this.ctx) return;
+        const ctx = this.ctx;
+        const now = ctx.currentTime;
+        const base = 440 + Math.min(level, 10) * 40;
+        const notes = [0, 4, 7, 12]; // major arpeggio
+        notes.forEach((semi, i) => {
+          const osc = ctx.createOscillator();
+          osc.type = "triangle";
+          const freq = base * Math.pow(2, semi / 12);
+          osc.frequency.value = freq;
+          const t = now + i * 0.035;
+          const g = ctx.createGain();
+          this._env(g, t, 0.005, 0.14, 0.14 + level * 0.008);
+          osc.connect(g); g.connect(this.master);
+          osc.start(t);
+          osc.stop(t + 0.18);
+        });
+      },
+
+      // Game start — upward sweep
+      playStart() {
+        if (!this.enabled || !this.ctx) return;
+        const ctx = this.ctx;
+        const now = ctx.currentTime;
+        const osc = ctx.createOscillator();
+        osc.type = "sawtooth";
+        osc.frequency.setValueAtTime(220, now);
+        osc.frequency.exponentialRampToValueAtTime(880, now + 0.35);
+        const lp = ctx.createBiquadFilter();
+        lp.type = "lowpass";
+        lp.frequency.setValueAtTime(400, now);
+        lp.frequency.exponentialRampToValueAtTime(4200, now + 0.35);
+        const g = ctx.createGain();
+        this._env(g, now, 0.01, 0.35, 0.32);
+        osc.connect(lp); lp.connect(g); g.connect(this.master);
+        osc.start(now);
+        osc.stop(now + 0.38);
+      },
+
+      // Game over — descending tones
+      playGameOver(reason = "miss") {
+        if (!this.enabled || !this.ctx) return;
+        const ctx = this.ctx;
+        const now = ctx.currentTime;
+        let steps;
+        if(reason === "win"){
+          // Victory fanfare: rising major arpeggio (C5 E5 G5 C6) — cheerful ascending
+          steps = [523, 659, 784, 1047];
+        } else if(reason === "bomb"){
+          steps = [523, 392, 294, 196];
+        } else {
+          steps = [440, 349, 262, 196];
+        }
+        steps.forEach((f, i) => {
+          const osc = ctx.createOscillator();
+          osc.type = "triangle";
+          osc.frequency.value = f;
+          const t = now + i * 0.11;
+          const g = ctx.createGain();
+          this._env(g, t, 0.008, 0.28, 0.28);
+          osc.connect(g); g.connect(this.master);
+          osc.start(t);
+          osc.stop(t + 0.32);
+        });
+      },
+
+      // UI click
+      playClick() {
+        if (!this.enabled || !this.ctx) return;
+        const ctx = this.ctx;
+        const now = ctx.currentTime;
+        const osc = ctx.createOscillator();
+        osc.type = "square";
+        osc.frequency.setValueAtTime(1200, now);
+        osc.frequency.exponentialRampToValueAtTime(600, now + 0.05);
+        const g = ctx.createGain();
+        this._env(g, now, 0.002, 0.06, 0.12);
+        osc.connect(g); g.connect(this.master);
+        osc.start(now);
+        osc.stop(now + 0.08);
+      },
+    };
+
+    // ============================================================
+    // DYNAMIC CONFIG (will be updated on difficulty selection)
+    // ============================================================
+    const CFG_BASE = {
+      DPR_MAX: 2.0,
+      BG: 0x000000,
+      WORLD_Y: 1.0,
+      TOP_BOUNCE: 0.12,
+      OUT_KILL_Y: -1.58,
+      SPIN: 3.2,
+      SLICE_HOLD_MS: 180,
+      HAND_LOST_MS: 220,
+      DETECT_EVERY_MS: 45,
+      HAND_SMOOTH: 0.68,
+      // Hand position prediction (extrapolate between detection frames for 60fps feel)
+      PREDICT_ENABLE: true,
+      PREDICT_MAX_MS: 160,
+      // Detect latency budget — if detect exceeds this, record as "slow"
+      DETECT_WARN_MS: 45,
+      // Run MediaPipe detection on an independent timer (≠ render loop) so
+      // synchronous detectForVideo (~20-50 ms WASM) never stalls 60fps render.
+      DETECT_AS_THREAD: true,
+      // Adaptive 找不到手提示与模型重建阈值
+      HAND_HINT_AFTER_MS: 3000,
+      HAND_RECOVER_AFTER_MS: 15000,
+      OPEN_EXTENDED_MIN: 3,
+      FIST_EXTENDED_MAX: 1,
+      TRAIL_POINTS: 72,
+      TRAIL_WIDTH_BASE: 0.090,
+      TRAIL_WIDTH_SPEED: 0.050,
+      TRAIL_ALPHA_ON: 1.0,
+      TRAIL_ALPHA_OFF: 0.20,
+      TRAIL_GLOW_K: 8.5,
+      TRAIL_TAPER_POW: 1.7,
+      TRAIL_FALLBACK_HIDE_MS: 220,
+      SPARKS_PER_SLICE: 18,
+      SPARK_LIFE: 0.55,
+      CAM_DRAW_GRID: false,
+      CAM_OVERLAY_POINTS: true,
+    };
+
+    let CFG = { ...CFG_BASE, ...DIFFICULTIES.normal };
+    let currentDifficulty = "normal";
+    let totalSlices = 0;
+
+    // ============================================================
+    // DOM
+    // ============================================================
+    const canvas = document.getElementById("gl");
+    const overlay = document.getElementById("overlay");
+    const startBtn = document.getElementById("startBtn");
+    const banner = document.getElementById("banner");
+
+    const hud = document.getElementById("hud");
+    const dot = document.getElementById("dot");
+    const scanText = document.getElementById("scanText");
+    const bladeStateEl = document.getElementById("bladeState");
+    const gestureTextEl = document.getElementById("gestureText");
+    const comboTextEl = document.getElementById("comboText");
+    const missTextEl = document.getElementById("missText");
+    const diffTextEl = document.getElementById("diffText");
+    const detectStatsEl = document.getElementById("detectStats");
+    const pointsText = document.getElementById("pointsText");
+    const practiceStats = document.getElementById("practiceStats");
+
+    const scoreText = document.getElementById("scoreText");
+    const fpsText = document.getElementById("fpsText");
+
+    const flash = document.getElementById("flash");
+
+    const camWrap = document.getElementById("camWrap");
+    const camEl = document.getElementById("cam");
+    const camBlade = document.getElementById("camBlade");
+    const camOverlay = document.getElementById("camOverlay");
+    const camCtx = camOverlay.getContext("2d");
+
+    const gameOver = document.getElementById("gameOver");
+    const gameOverTitle = document.getElementById("gameOverTitle");
+    const finalScoreEl = document.getElementById("finalScore");
+    const bestComboEl = document.getElementById("bestCombo");
+    const finalDiffEl = document.getElementById("finalDiff");
+    const finalSlicesEl = document.getElementById("finalSlices");
+    const restartBtn = document.getElementById("restartBtn");
+    const menuBtn = document.getElementById("menuBtn");
+
+    const soundToggle = document.getElementById("soundToggle");
+    const diffBtns = document.querySelectorAll(".diff-btn");
+
+    // ============================================================
+    // Difficulty UI
+    // ============================================================
+    function setDifficulty(key) {
+      if (!DIFFICULTIES[key]) key = "normal";
+      currentDifficulty = key;
+      const preset = DIFFICULTIES[key];
+      CFG = { ...CFG_BASE, ...preset };
+      setWallpaper(key);
+      diffTextEl.textContent = preset.label;
+      diffTextEl.style.color =
+        key === "easy" ? "rgba(110,255,160,.95)" :
+        key === "hard" ? "rgba(255,160,120,.95)" :
+                        "rgba(180,240,255,.92)";
+      diffBtns.forEach(b => {
+        const k = b.getAttribute("data-diff");
+        b.classList.toggle("active", k === key);
+      });
+      missTextEl.textContent = `0/${preset.MISS_MAX}`;
+      SFX.playClick();
+    }
+
+    diffBtns.forEach(btn => {
+      btn.addEventListener("click", () => {
+        setDifficulty(btn.getAttribute("data-diff"));
+      });
+    });
+
+    soundToggle.addEventListener("click", () => {
+      const on = soundToggle.classList.toggle("on");
+      soundToggle.textContent = on ? "🔊 Sound ON" : "🔇 Sound OFF";
+      SFX.setEnabled(on);
+      if (on) SFX.playClick();
+    });
+
+    // ============================================================
+    // Utils
+    // ============================================================
+    const clamp = (v,a,b)=>Math.max(a,Math.min(b,v));
+    const lerp = (a,b,t)=>a+(b-a)*t;
+    const nowMs = ()=>performance.now();
+
+    function segCircle(p1, p2, c, r){
+      const vx = p2.x - p1.x, vy = p2.y - p1.y;
+      const wx = c.x - p1.x, wy = c.y - p1.y;
+      const vv = vx*vx + vy*vy;
+      if (vv < 1e-6) return ((wx*wx + wy*wy) <= r*r);
+      let t = (wx*vx + wy*vy) / vv;
+      t = clamp(t, 0, 1);
+      const px = p1.x + t*vx, py = p1.y + t*vy;
+      const dx = c.x - px, dy = c.y - py;
+      return (dx*dx + dy*dy) <= r*r;
+    }
+
+    function showComboPop(text, color = "rgba(110,255,220,.98)") {
+      const el = document.createElement("div");
+      el.className = "combo-pop";
+      el.textContent = text;
+      el.style.color = color;
+      const rect = canvas.getBoundingClientRect();
+      el.style.left = (rect.left + rect.width / 2) + "px";
+      el.style.top  = (rect.top + rect.height / 2 + 20) + "px";
+      document.body.appendChild(el);
+      setTimeout(() => el.remove(), 900);
+    }
+
+    // ============================================================
+    // Three.js
+    // ============================================================
+    let renderer, scene, camera, aspect;
+    let root, sparksGroup;
+
+    let bladeCursor;
+    let trailMesh, trailMat, trailGeo;
+    let trailWidth = CFG.TRAIL_WIDTH_BASE;
+
+    const fruitTypes = ["apple","orange","lemon","melon"];
+    const fruitTex = new Map();
+    const halfTexCache = new Map();
+    let bombTex = null;
+    let sparkTex = null;
+
+    function screenToWorld(nx, ny){
+      const x = lerp(-aspect, aspect, nx);
+      const y = lerp(CFG.WORLD_Y, -CFG.WORLD_Y, ny);
+      return { x, y };
+    }
+
+    function initThree(){
+      renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, powerPreference: "high-performance" });
+      // Canvas must clear to transparent so the HTML <video id="wallpaperVideo">
+      // underneath shows through. CFG.BG is used for HUD dimming elsewhere.
+      renderer.setClearColor(0x000000, 0);
+      renderer.setPixelRatio(Math.min(devicePixelRatio || 1, CFG.DPR_MAX));
+      renderer.setSize(innerWidth, innerHeight, false);
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+      scene = new THREE.Scene();
+      // No scene.background — the HTML video layer IS the background.
+      // Anything drawn here would hide the mp4.
+      scene.background = null;
+
+      root = new THREE.Group();
+      scene.add(root);
+
+      sparksGroup = new THREE.Group();
+      scene.add(sparksGroup);
+
+      initTextures();
+      initBackdrop();
+      initWallpaper();
+      initTrailRibbon();
+      initBladeCursor();
+
+      onResize();
+      addEventListener("resize", onResize, { passive: true });
+    }
+
+    function onResize(){
+      aspect = innerWidth / innerHeight;
+      renderer.setPixelRatio(Math.min(devicePixelRatio || 1, CFG.DPR_MAX));
+      renderer.setSize(innerWidth, innerHeight, false);
+
+      camera = new THREE.OrthographicCamera(-aspect, aspect, CFG.WORLD_Y, -CFG.WORLD_Y, 0.01, 100);
+      camera.position.set(0, 0, 10);
+      camera.lookAt(0, 0, 0);
+      layoutBg();
+
+      const rect = camWrap.getBoundingClientRect();
+      const dpr = Math.min(devicePixelRatio||1, 2);
+      camOverlay.width = Math.floor(rect.width * dpr);
+      camOverlay.height = Math.floor(rect.height * dpr);
+    }
+
+    function initBackdrop(){
+      const N = 1500;
+      const pos = new Float32Array(N*3);
+      const col = new Float32Array(N*3);
+      for(let i=0;i<N;i++){
+        const x = (Math.random()*2-1) * aspect * 1.15;
+        const y = (Math.random()*2-1) * 1.15;
+        const z = -Math.random()*0.6;
+        pos[i*3+0]=x; pos[i*3+1]=y; pos[i*3+2]=z;
+        const c = 0.45 + Math.random()*0.35;
+        col[i*3+0]=c; col[i*3+1]=c; col[i*3+2]=c;
+      }
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.BufferAttribute(pos,3));
+      g.setAttribute("color", new THREE.BufferAttribute(col,3));
+      const m = new THREE.PointsMaterial({
+        size: 0.010,
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.55,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending
+      });
+      const pts = new THREE.Points(g,m);
+      pts.position.z = -0.5;
+      scene.add(pts);
+    }
+
+    // ============================================================
+    // Wallpaper (HTML <video> element, NOT Three.js VideoTexture —
+    // browsers decode mp4 far more reliably than WebGL uploads).
+    // ============================================================
+    const wallVideos   = {};        // preloaded hidden <video> elements
+    let   curWallKey   = null;      // currently showing: "easy" | "normal" | "hard"
+    let   wpVideo      = null;      // reference to the visible <video id="wallpaperVideo">
+
+    function initWallpaper(){
+      try{
+        // Grab the HTML <video> that sits BEHIND the transparent canvas.
+        wpVideo = document.getElementById("wallpaperVideo");
+        if(wpVideo){
+          wpVideo.playsInline = true;
+          wpVideo.muted = true;
+          wpVideo.loop = true;
+          wpVideo.autoplay = true;
+          wpVideo.crossOrigin = "anonymous";
+          wpVideo.setAttribute("playsinline","");
+          wpVideo.setAttribute("webkit-playsinline","");
+          wpVideo.setAttribute("muted","");
+          wpVideo.setAttribute("loop","");
+          wpVideo.setAttribute("autoplay","");
+          wpVideo.setAttribute("preload","auto");
+          // Chromium autoplay requires BOTH <autoplay> attribute + .muted=true,
+          // but even then it sometimes blocks; onloadedmetadata is the most
+          // reliable point to kick off play() before any user gesture.
+          wpVideo.onloadedmetadata = () => { try { wpVideo.play().catch(()=>{}); } catch(_) {} };
+          try { wpVideo.load(); } catch(_) {}
+        }
+
+        // Preload all three videos via detached elements — this makes the
+        // switch instant when the user clicks a difficulty button. We don't
+        // actually display these; the visible one is always #wallpaperVideo.
+        const mapKey = { easy: "grass", normal: "ocean", hard: "snow" };
+        const wc = document.createElement("div");
+        wc.style.cssText = "position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;overflow:hidden;opacity:0;pointer-events:none;z-index:-1;";
+        document.body.appendChild(wc);
+        for(const key of ["easy","normal","hard"]){
+          const fn = mapKey[key] + ".mp4";
+          const v = document.createElement("video");
+          wc.appendChild(v);
+          v.src = fn;
+          v.playsInline = true; v.muted = true; v.loop = true; v.autoplay = true;
+          v.setAttribute("playsinline","");
+          v.setAttribute("webkit-playsinline","");
+          v.setAttribute("muted","");
+          v.setAttribute("loop","");
+          v.setAttribute("autoplay","");
+          v.setAttribute("preload","auto");
+          v.crossOrigin = "anonymous";
+          try { v.load(); } catch(_) {}
+          wallVideos[key] = v;
+        }
+        const resumeAll = () => {
+          if(wpVideo){ try{ wpVideo.play(); }catch(_){} }
+          for(const k in wallVideos){ try{ wallVideos[k].play(); }catch(_){} }
+        };
+        window.addEventListener("pointerdown", resumeAll, { once: true });
+        window.addEventListener("keydown",     resumeAll, { once: true });
+
+        setWallpaper(typeof currentDifficulty === "string" && currentDifficulty ? currentDifficulty : "normal");
+      }catch(e){
+        console.error("wallpaper init failed:", e);
+        try {
+          bannerMsg("<strong>壁纸加载失败：</strong>请确认 grass.mp4 ocean.mp4 snow.mp4 三个文件存在。原错误：" + (e?.message ?? e).toString().slice(0, 180));
+        } catch(_) {}
+      }
+    }
+    function setWallpaper(key){
+      const mapKey = { easy: "grass", normal: "ocean", hard: "snow" };
+      const v = wpVideo || document.getElementById("wallpaperVideo");
+      if(!v || !mapKey[key]) return;
+      curWallKey = key;
+      const target = mapKey[key] + ".mp4";
+      // Only set src if we're not already showing this video — setting src
+      // unconditionally causes a reload + flicker every time.
+      if(!v.src.endsWith(encodeURI(target))){
+        v.src = encodeURI(target);
+        try { v.load(); } catch(_) {}
+      }
+      try { v.currentTime = 0; v.play().catch(()=>{}); } catch(_) {}
+      // Also play the preloaded matching video and pause others (prewarming)
+      for(const k in wallVideos){
+        const pv = wallVideos[k];
+        if(!pv) continue;
+        if(k === key){ try{ pv.currentTime = 0; pv.play().catch(()=>{}); }catch(_){} }
+        else         { try{ pv.pause(); }catch(_){} }
+      }
+    }
+    function drawWallpaper(t, dt){ /* HTML video plays automatically — nothing to draw here. */ }
+
+    function layoutBg(){
+      // No longer needed for HTML-video background (CSS object-fit:cover handles cover-fit).
+      // Kept as a no-op so existing callers (onResize etc.) don't break.
+      return;
+    }
+
+    // ============================================================
+    // Ribbon Trail
+    // ============================================================
+    const trail = new Array(CFG.TRAIL_POINTS).fill(0).map(()=>({x:999,y:999,t:0}));
+    let trailHead = 0;
+    let lastTrailTime = 0;
+
+    function initTrailRibbon(){
+      const N = CFG.TRAIL_POINTS;
+      const pos = new Float32Array(N * 2 * 3);
+      const uv  = new Float32Array(N * 2 * 2);
+
+      const idx = [];
+      for(let i=0;i<N-1;i++){
+        const a = i*2, b=a+1, c=a+2, d=a+3;
+        idx.push(a,b,c,  b,d,c);
+      }
+
+      trailGeo = new THREE.BufferGeometry();
+      trailGeo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+      trailGeo.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
+      trailGeo.setIndex(idx);
+
+      trailMat = new THREE.ShaderMaterial({
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        uniforms: {
+          uAlpha: { value: 0.0 },
+          uGlowK: { value: CFG.TRAIL_GLOW_K },
+          uTaperPow: { value: CFG.TRAIL_TAPER_POW },
+          uTime: { value: 0.0 },
+          uC1: { value: new THREE.Color(0.30, 0.95, 1.00) },
+          uC2: { value: new THREE.Color(0.58, 0.30, 1.00) },
+          uCore: { value: new THREE.Color(1.00, 1.00, 1.00) },
+        },
+        vertexShader: /*glsl*/`
+          varying vec2 vUv;
+          void main(){
+            vUv = uv;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }
+        `,
+        fragmentShader: /*glsl*/`
+          uniform float uAlpha;
+          uniform float uGlowK;
+          uniform float uTaperPow;
+          uniform float uTime;
+          uniform vec3  uC1;
+          uniform vec3  uC2;
+          uniform vec3  uCore;
+          varying vec2 vUv;
+          vec3 hsv2rgb(vec3 c){
+            vec3 q = abs(fract(c.xxx + vec3(0.0, 0.6667, 0.3333)) * 6.0 - 3.0);
+            return c.z * mix(vec3(1.0), clamp(q - 1.0, 0.0, 1.0), c.y);
+          }
+          void main(){
+            float x = vUv.x;                       // 0..1 across width
+            float y = vUv.y;                       // 0 tail .. 1 head
+            float edge = abs(x - 0.5) * 2.0;       // 0 center .. 1 border
+            float taper = pow(clamp(y, 0.0, 1.0), uTaperPow * 0.8);
+
+            // radial layers: white-hot core / plasma body / wide soft aura
+            float core = exp(-90.0 * edge * edge);
+            float mid  = exp(-uGlowK * edge * edge);
+            float aura = exp(-3.2  * edge * edge);
+
+            // bright rainbow hue flowing along the streak (the fancy part)
+            vec3 rainbow = hsv2rgb(vec3(fract(y * 1.1 - uTime * 0.30), 1.0, 1.0));
+            vec3 tint = mix(uC1, rainbow, 0.65);
+
+            // Petals are the visual star; keep streak a neutral thin under-line
+            // so you still see WHERE you are cutting for collision feedback.
+            vec3 col = uC1 * (aura * 0.55) + uCore * core;
+
+            float a = clamp(aura * 0.55 + core, 0.0, 1.0) * taper * uAlpha * 0.82;
+            gl_FragColor = vec4(col, a);
+          }
+        `
+      });
+
+      trailMesh = new THREE.Mesh(trailGeo, trailMat);
+      trailMesh.renderOrder = 10;
+      scene.add(trailMesh);
+
+      clearTrail();
+    }
+
+    function clearTrail(){
+      const pos = trailGeo.getAttribute("position");
+      const uv = trailGeo.getAttribute("uv");
+      for(let i=0;i<CFG.TRAIL_POINTS;i++){
+        trail[i].x = 999; trail[i].y = 999; trail[i].t = 0;
+        pos.array[(i*2+0)*3+0] = 999;
+        pos.array[(i*2+0)*3+1] = 999;
+        pos.array[(i*2+0)*3+2] = 0.02;
+
+        pos.array[(i*2+1)*3+0] = 999;
+        pos.array[(i*2+1)*3+1] = 999;
+        pos.array[(i*2+1)*3+2] = 0.02;
+
+        const v = i/(CFG.TRAIL_POINTS-1);
+        uv.array[(i*2+0)*2+0] = 0.0;
+        uv.array[(i*2+0)*2+1] = v;
+        uv.array[(i*2+1)*2+0] = 1.0;
+        uv.array[(i*2+1)*2+1] = v;
+      }
+      pos.needsUpdate = true;
+      uv.needsUpdate = true;
+    }
+
+    function pushTrailPoint(x, y, t){
+      const prev = trail[(trailHead - 1 + trail.length) % trail.length];
+      const ddx = x - prev.x, ddy = y - prev.y;
+      if (petalTex && petals.length < MAX_PETALS) {
+        const d = Math.hypot(ddx, ddy);
+        const count = Math.max(1, Math.min(3, 1 + Math.floor(d / 0.025 * 1.2)));
+        for(let pp=0;pp<count;pp++){
+          const sp = makeSprite(petalTex);
+          const sz = 0.045 + Math.random()*0.045;
+          sp.scale.set(sz, sz, 1);
+          sp.position.set(x + (Math.random()-0.5)*0.07, y + (Math.random()-0.5)*0.07, 0.04);
+          sp.renderOrder = 9;
+          sp.material.color.setHSL(0.92 + (Math.random()-0.5)*0.06, 0.45 + Math.random()*0.35, 0.78 + Math.random()*0.18);
+          root.add(sp);
+          petals.push({
+            sp, vx: (Math.random()-0.5)*0.35 - hand.vx*0.25,
+            vy: -0.55 - Math.random()*0.75 - hand.vy*0.25,
+            vr: (Math.random()-0.5)*4.2, age: 0, life: 0.85 + Math.random()*0.85
+          });
+        }
+      }
+      trail[trailHead].x = x;
+      trail[trailHead].y = y;
+      trail[trailHead].t = t;
+      trailHead = (trailHead + 1) % trail.length;
+      lastTrailTime = t;
+
+      const pos = trailGeo.getAttribute("position");
+      const uv = trailGeo.getAttribute("uv");
+      const N = trail.length;
+
+      let hasPrev = false;
+      let pvLx = 0, pvLy = 0, pvRx = 0, pvRy = 0;
+      for(let i=0;i<N;i++){
+        const src = (trailHead - 1 - i + N) % N;
+        const p0 = trail[(src + 1) % N];
+        const p1 = trail[src];
+        const p2 = trail[(src - 1 + N) % N];
+
+        // Stale / uninitialized points collapse onto the previous vertex pair.
+        // Prevents ring-buffer wrap from stretching giant white triangles
+        // across the screen when a stroke starts or wraps around.
+        const ok = p1.t > 0 && (t - p1.t) <= 300 && p1.x < 500;
+        if(!ok){
+          if(hasPrev){
+            pos.array[(i*2+0)*3+0] = pvLx; pos.array[(i*2+0)*3+1] = pvLy; pos.array[(i*2+0)*3+2] = 0.03;
+            pos.array[(i*2+1)*3+0] = pvRx; pos.array[(i*2+1)*3+1] = pvRy; pos.array[(i*2+1)*3+2] = 0.03;
+          }
+          continue;
+        }
+
+        const x1 = p1.x, y1 = p1.y;
+
+        let tx = (p0.x - p2.x);
+        let ty = (p0.y - p2.y);
+        const tl = Math.hypot(tx, ty) || 1.0;
+        tx /= tl; ty /= tl;
+
+        const nx = -ty, ny = tx;
+
+        const v = 1.0 - (i/(N-1));
+        const w = trailWidth * (0.25 + 0.75 * Math.pow(v, 0.9));
+
+        const lx = x1 - nx*w, ly = y1 - ny*w;
+        const rx = x1 + nx*w, ry = y1 + ny*w;
+        pvLx = lx; pvLy = ly; pvRx = rx; pvRy = ry; hasPrev = true;
+
+        const vi0 = i*2+0;
+        const vi1 = i*2+1;
+
+        pos.array[vi0*3+0] = lx;
+        pos.array[vi0*3+1] = ly;
+        pos.array[vi0*3+2] = 0.03;
+
+        pos.array[vi1*3+0] = rx;
+        pos.array[vi1*3+1] = ry;
+        pos.array[vi1*3+2] = 0.03;
+
+        uv.array[vi0*2+0] = 0.0;
+        uv.array[vi0*2+1] = v;
+        uv.array[vi1*2+0] = 1.0;
+        uv.array[vi1*2+1] = v;
+      }
+
+      pos.needsUpdate = true;
+      uv.needsUpdate = true;
+    }
+
+    function initBladeCursor(){
+      // Cursor: soft halo ring (光圈). Rotates slowly + pulses slightly.
+      const tex = new THREE.CanvasTexture(makeHaloCanvas(160));
+      tex.colorSpace = THREE.SRGBColorSpace;
+      bladeCursor = makeSprite(tex);
+      bladeCursor.scale.set(0.22, 0.22, 1);
+      bladeCursor.material.color = new THREE.Color(0.92, 1.0, 1.0);
+      bladeCursor.material.opacity = 0.0;
+      bladeCursor.position.set(0, 0, 0.05);
+      bladeCursor.renderOrder = 11;
+      scene.add(bladeCursor);
+    }
+
+    function makeHaloCanvas(size){
+      const c = document.createElement("canvas");
+      c.width = c.height = size;
+      const g = c.getContext("2d");
+      const cx = size/2, cy = size/2, R = size*0.48;
+      const aura = g.createRadialGradient(cx,cy, R*0.05, cx,cy, R);
+      aura.addColorStop(0,    "rgba(200,255,255,0.0)");
+      aura.addColorStop(0.35, "rgba(130,230,255,0.45)");
+      aura.addColorStop(0.72, "rgba(120,200,255,0.15)");
+      aura.addColorStop(1,    "rgba(120,200,255,0.0)");
+      g.fillStyle = aura;
+      g.beginPath(); g.arc(cx,cy,R, 0, Math.PI*2); g.fill();
+      g.lineWidth = size*0.032;
+      const ring = g.createRadialGradient(cx,cy,R*0.70, cx,cy,R*0.98);
+      ring.addColorStop(0, "rgba(170,245,255,0)");
+      ring.addColorStop(0.5, "rgba(230,255,255,0.95)");
+      ring.addColorStop(1, "rgba(170,245,255,0)");
+      g.strokeStyle = ring;
+      g.beginPath(); g.arc(cx,cy,R*0.82, 0, Math.PI*2); g.stroke();
+      g.lineWidth = size*0.014;
+      g.strokeStyle = "rgba(255,255,255,0.85)";
+      g.beginPath(); g.arc(cx,cy,R*0.50, 0, Math.PI*2); g.stroke();
+      return c;
+    }
+
+    // ============================================================
+    // Procedural textures
+    // ============================================================
+    function makeCanvas(size=256){
+      const c = document.createElement("canvas");
+      c.width = c.height = size;
+      const ctx = c.getContext("2d");
+      return { c, ctx };
+    }
+    function circle(ctx, x, y, r){
+      ctx.beginPath();
+      ctx.arc(x,y,r,0,Math.PI*2);
+      ctx.closePath();
+    }
+
+    function drawFruitTexture(type, size=256){
+      const { c, ctx } = makeCanvas(size);
+      ctx.clearRect(0,0,size,size);
+
+      ctx.save();
+      ctx.translate(size/2, size/2);
+      const sh = ctx.createRadialGradient(0,0,size*0.12, 0,0,size*0.52);
+      sh.addColorStop(0, "rgba(0,0,0,0)");
+      sh.addColorStop(1, "rgba(0,0,0,0.35)");
+      ctx.fillStyle = sh;
+      circle(ctx, 0, 0, size*0.49);
+      ctx.fill();
+      ctx.restore();
+
+      ctx.save();
+      ctx.translate(size/2, size/2);
+
+      if(type === "apple"){
+        const g = ctx.createRadialGradient(-size*0.12,-size*0.15, size*0.06, 0,0,size*0.55);
+        g.addColorStop(0, "rgba(255,255,255,0.25)");
+        g.addColorStop(0.18, "rgba(255,90,90,1)");
+        g.addColorStop(0.75, "rgba(175,25,25,1)");
+        g.addColorStop(1, "rgba(90,10,10,1)");
+        ctx.fillStyle = g; circle(ctx, 0, 0, size*0.44); ctx.fill();
+
+        ctx.globalAlpha = 0.18; ctx.fillStyle = "rgba(255,220,220,1)";
+        for(let i=0;i<48;i++){
+          const a = Math.random()*Math.PI*2;
+          const rr = (Math.random()**0.6)*size*0.33;
+          circle(ctx, Math.cos(a)*rr, Math.sin(a)*rr, 1 + Math.random()*1.6); ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+
+        ctx.rotate(-0.5);
+        ctx.fillStyle = "rgba(80,210,110,1)";
+        ctx.beginPath();
+        ctx.ellipse(size*0.07, -size*0.36, size*0.10, size*0.05, 0.3, 0, Math.PI*2);
+        ctx.fill();
+        ctx.rotate(0.5);
+
+        ctx.strokeStyle = "rgba(120,70,30,1)";
+        ctx.lineWidth = 10; ctx.lineCap = "round";
+        ctx.beginPath(); ctx.moveTo(0, -size*0.36); ctx.lineTo(size*0.02, -size*0.48); ctx.stroke();
+
+        const h = ctx.createRadialGradient(-size*0.16,-size*0.16, size*0.02, -size*0.12,-size*0.10, size*0.26);
+        h.addColorStop(0, "rgba(255,255,255,0.35)");
+        h.addColorStop(1, "rgba(255,255,255,0)");
+        ctx.fillStyle = h; circle(ctx, -size*0.12, -size*0.12, size*0.30); ctx.fill();
+      }
+
+      if(type === "orange"){
+        const g = ctx.createRadialGradient(-size*0.14,-size*0.16, size*0.06, 0,0,size*0.58);
+        g.addColorStop(0, "rgba(255,255,255,0.18)");
+        g.addColorStop(0.22, "rgba(255,170,60,1)");
+        g.addColorStop(0.75, "rgba(220,95,18,1)");
+        g.addColorStop(1, "rgba(120,40,8,1)");
+        ctx.fillStyle = g; circle(ctx, 0, 0, size*0.44); ctx.fill();
+
+        ctx.globalAlpha = 0.22; ctx.fillStyle = "rgba(255,220,150,1)";
+        for(let i=0;i<90;i++){
+          const a = Math.random()*Math.PI*2;
+          const rr = (Math.random()**0.7)*size*0.33;
+          circle(ctx, Math.cos(a)*rr, Math.sin(a)*rr, 0.8 + Math.random()*1.4); ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+
+        ctx.fillStyle = "rgba(255,255,255,0.07)";
+        circle(ctx, 0, -size*0.34, size*0.07); ctx.fill();
+
+        const h = ctx.createRadialGradient(-size*0.18,-size*0.18, size*0.02, -size*0.12,-size*0.10, size*0.26);
+        h.addColorStop(0, "rgba(255,255,255,0.28)");
+        h.addColorStop(1, "rgba(255,255,255,0)");
+        ctx.fillStyle = h; circle(ctx, -size*0.12, -size*0.12, size*0.30); ctx.fill();
+      }
+
+      if(type === "lemon"){
+        const g = ctx.createRadialGradient(-size*0.12,-size*0.16, size*0.06, 0,0,size*0.58);
+        g.addColorStop(0, "rgba(255,255,255,0.18)");
+        g.addColorStop(0.24, "rgba(255,235,90,1)");
+        g.addColorStop(0.78, "rgba(215,175,18,1)");
+        g.addColorStop(1, "rgba(120,95,10,1)");
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.ellipse(0,0, size*0.44, size*0.38, 0.2, 0, Math.PI*2);
+        ctx.fill();
+
+        ctx.fillStyle = "rgba(255,255,255,0.06)";
+        circle(ctx, -size*0.36, 0, size*0.07); ctx.fill();
+        circle(ctx,  size*0.36, 0, size*0.07); ctx.fill();
+
+        const h = ctx.createRadialGradient(-size*0.18,-size*0.18, size*0.02, -size*0.12,-size*0.10, size*0.26);
+        h.addColorStop(0, "rgba(255,255,255,0.25)");
+        h.addColorStop(1, "rgba(255,255,255,0)");
+        ctx.fillStyle = h; circle(ctx, -size*0.12, -size*0.12, size*0.30); ctx.fill();
+      }
+
+      if(type === "melon"){
+        const g = ctx.createRadialGradient(-size*0.12,-size*0.16, size*0.06, 0,0,size*0.58);
+        g.addColorStop(0, "rgba(255,255,255,0.15)");
+        g.addColorStop(0.22, "rgba(120,220,120,1)");
+        g.addColorStop(0.78, "rgba(30,120,40,1)");
+        g.addColorStop(1, "rgba(10,60,18,1)");
+        ctx.fillStyle = g; circle(ctx, 0,0, size*0.44); ctx.fill();
+
+        ctx.globalAlpha = 0.25;
+        ctx.strokeStyle = "rgba(10,60,18,1)";
+        ctx.lineWidth = 10;
+        for(let i=-4;i<=4;i++){
+          ctx.beginPath();
+          ctx.arc(0,0, size*0.40, (i*0.35)+0.2, (i*0.35)+0.65);
+          ctx.stroke();
+        }
+        ctx.globalAlpha = 1;
+
+        const h = ctx.createRadialGradient(-size*0.18,-size*0.18, size*0.02, -size*0.12,-size*0.10, size*0.26);
+        h.addColorStop(0, "rgba(255,255,255,0.22)");
+        h.addColorStop(1, "rgba(255,255,255,0)");
+        ctx.fillStyle = h; circle(ctx, -size*0.12, -size*0.12, size*0.30); ctx.fill();
+      }
+
+      ctx.restore();
+
+      ctx.save();
+      ctx.globalCompositeOperation = "destination-in";
+      const m = ctx.createRadialGradient(size/2,size/2, size*0.10, size/2,size/2, size*0.50);
+      m.addColorStop(0, "rgba(0,0,0,1)");
+      m.addColorStop(0.95, "rgba(0,0,0,1)");
+      m.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = m;
+      circle(ctx, size/2, size/2, size*0.50);
+      ctx.fill();
+      ctx.restore();
+
+      return c;
+    }
+
+    function drawBombTexture(size=256){
+      const { c, ctx } = makeCanvas(size);
+      ctx.clearRect(0,0,size,size);
+
+      ctx.save();
+      ctx.translate(size/2,size/2);
+
+      const g = ctx.createRadialGradient(-size*0.12,-size*0.16, size*0.06, 0,0,size*0.58);
+      g.addColorStop(0, "rgba(255,255,255,0.18)");
+      g.addColorStop(0.22, "rgba(60,60,70,1)");
+      g.addColorStop(0.78, "rgba(10,10,12,1)");
+      g.addColorStop(1, "rgba(0,0,0,1)");
+      ctx.fillStyle = g; circle(ctx,0,0,size*0.44); ctx.fill();
+
+      ctx.strokeStyle = "rgba(255,80,80,0.9)";
+      ctx.lineWidth = 10;
+      ctx.beginPath(); ctx.arc(0,0,size*0.30,0,Math.PI*2); ctx.stroke();
+
+      ctx.strokeStyle = "rgba(180,140,80,1)";
+      ctx.lineWidth = 10; ctx.lineCap = "round";
+      ctx.beginPath(); ctx.moveTo(size*0.10, -size*0.40); ctx.lineTo(size*0.18, -size*0.52); ctx.stroke();
+
+      ctx.fillStyle = "rgba(255,210,120,1)";
+      circle(ctx, size*0.22, -size*0.56, size*0.04); ctx.fill();
+      ctx.fillStyle = "rgba(255,120,80,1)";
+      circle(ctx, size*0.26, -size*0.60, size*0.02); ctx.fill();
+
+      const h = ctx.createRadialGradient(-size*0.18,-size*0.18, size*0.02, -size*0.12,-size*0.10, size*0.26);
+      h.addColorStop(0, "rgba(255,255,255,0.22)");
+      h.addColorStop(1, "rgba(255,255,255,0)");
+      ctx.fillStyle = h; circle(ctx, -size*0.12, -size*0.12, size*0.30); ctx.fill();
+
+      ctx.restore();
+
+      ctx.save();
+      ctx.globalCompositeOperation = "destination-in";
+      const m = ctx.createRadialGradient(size/2,size/2, size*0.10, size/2,size/2, size*0.50);
+      m.addColorStop(0, "rgba(0,0,0,1)");
+      m.addColorStop(0.95, "rgba(0,0,0,1)");
+      m.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = m;
+      circle(ctx, size/2, size/2, size*0.50);
+      ctx.fill();
+      ctx.restore();
+
+      return c;
+    }
+
+    function drawSparkTexture(size=128){
+      const { c, ctx } = makeCanvas(size);
+      ctx.clearRect(0,0,size,size);
+      ctx.save();
+      ctx.translate(size/2,size/2);
+      const g = ctx.createRadialGradient(0,0, 0, 0,0, size*0.48);
+      g.addColorStop(0, "rgba(255,255,255,0.95)");
+      g.addColorStop(0.18, "rgba(255,255,255,0.45)");
+      g.addColorStop(1, "rgba(255,255,255,0)");
+      ctx.fillStyle = g;
+      circle(ctx,0,0,size*0.48);
+      ctx.fill();
+      ctx.restore();
+      return c;
+    }
+
+    function initTextures(){
+      for(const t of fruitTypes){
+        const cnv = drawFruitTexture(t, 256);
+        const tex = new THREE.CanvasTexture(cnv);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.anisotropy = 4;
+        fruitTex.set(t, tex);
+      }
+      bombTex = new THREE.CanvasTexture(drawBombTexture(256));
+      bombTex.colorSpace = THREE.SRGBColorSpace;
+      bombTex.anisotropy = 4;
+
+      sparkTex = new THREE.CanvasTexture(drawSparkTexture(128));
+      sparkTex.colorSpace = THREE.SRGBColorSpace;
+      sparkTex.anisotropy = 2;
+      petalTex = new THREE.CanvasTexture(makePetalTexture());
+      petalTex.colorSpace = THREE.SRGBColorSpace;
+      petalTex.anisotropy = 2;
+    }
+
+    function getHalfTexture(type, side){
+      const key = `${type}:${side}`;
+      if(halfTexCache.has(key)) return halfTexCache.get(key);
+
+      const base = drawFruitTexture(type, 256);
+      const { c, ctx } = makeCanvas(256);
+      ctx.clearRect(0,0,256,256);
+      ctx.save();
+      ctx.beginPath();
+      if(side === "L") ctx.rect(0,0,128,256);
+      else ctx.rect(128,0,128,256);
+      ctx.clip();
+      ctx.drawImage(base, 0, 0);
+      ctx.restore();
+
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
+      ctx.strokeStyle = "rgba(255,255,255,0.22)";
+      ctx.lineWidth = 6;
+      ctx.beginPath();
+      const x = 128;
+      ctx.moveTo(x, 44);
+      ctx.lineTo(x, 212);
+      ctx.stroke();
+      ctx.restore();
+
+      const tex = new THREE.CanvasTexture(c);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.anisotropy = 4;
+      halfTexCache.set(key, tex);
+      return tex;
+    }
+
+    // ============================================================
+    // Sprites & game objects
+    // ============================================================
+    const fruits = [];
+    const halves = [];
+    const sparks = [];
+
+    // Sakura petals scattered along the cut trail (花瓣散落).
+    let petalTex = null;
+    const petals = [];
+    const MAX_PETALS = 180;
+    function makePetalTexture(){
+      const size = 64;
+      const c = document.createElement("canvas");
+      c.width = c.height = size;
+      const g = c.getContext("2d");
+      g.translate(size/2, size/2);
+      for(let i=0;i<5;i++){
+        g.save(); g.rotate(i * (Math.PI*2/5));
+        g.beginPath();
+        g.moveTo(0, -size*0.08);
+        g.bezierCurveTo(size*0.26, -size*0.10, size*0.34, size*0.10, 0, size*0.46);
+        g.bezierCurveTo(-size*0.34, size*0.10, -size*0.26, -size*0.10, 0, -size*0.08);
+        g.closePath();
+        const grd = g.createLinearGradient(0, 0, 0, size*0.50);
+        grd.addColorStop(0, "rgba(255,255,255,1)");
+        grd.addColorStop(0.55, "rgba(255,205,220,1)");
+        grd.addColorStop(1, "rgba(255,140,175,1)");
+        g.fillStyle = grd; g.fill();
+        g.restore();
+      }
+      g.fillStyle = "rgba(255,240,150,0.95)";
+      g.beginPath(); g.arc(0,0, size*0.06, 0, Math.PI*2); g.fill();
+      return c;
+    }
+
+    function makeSprite(texture, blending){
+      const mat = new THREE.SpriteMaterial({
+        map: texture,
+        transparent: true,
+        depthWrite: false,
+        blending: blending || THREE.AdditiveBlending,
+        opacity: 1.0
+      });
+      const sp = new THREE.Sprite(mat);
+      sp.position.z = 0;
+      return sp;
+    }
+
+    function spawnFruit(isBomb=false){
+      const type = isBomb ? "bomb" : fruitTypes[(Math.random()*fruitTypes.length)|0];
+      const r = isBomb ? lerp(0.12, 0.16, Math.random()) : lerp(CFG.FRUIT_R_MIN, CFG.FRUIT_R_MAX, Math.random());
+      const x = (Math.random()*2 - 1) * (aspect * 0.85);
+      const y = -CFG.WORLD_Y - 0.22;
+
+      const vy = lerp(CFG.LAUNCH_VY_MIN, CFG.LAUNCH_VY_MAX, Math.random());
+      const vx = (Math.random()*2 - 1) * CFG.LAUNCH_VX;
+      const spin = (Math.random()*2 - 1) * CFG.SPIN;
+
+      const sprite = makeSprite(isBomb ? bombTex : fruitTex.get(type), THREE.NormalBlending);
+      sprite.scale.set(r*2, r*2, 1);
+      sprite.position.set(x, y, 0);
+
+      const obj = {
+        isBomb,
+        type,
+        r,
+        x, y,
+        vx, vy,
+        spin,
+        rot: Math.random()*Math.PI*2,
+        sliced: false,
+        missable: !isBomb,
+        sprite
+      };
+      sprite.material.rotation = obj.rot;
+
+      root.add(sprite);
+      fruits.push(obj);
+    }
+
+    function spawnHalves(fruit, cutDir){
+      const nx = -cutDir.dy, ny = cutDir.dx;
+      const push = fruit.r * 0.28;
+
+      const leftTex = getHalfTexture(fruit.type, "L");
+      const rightTex = getHalfTexture(fruit.type, "R");
+
+      const a = makeSprite(leftTex, THREE.NormalBlending);
+      const b = makeSprite(rightTex, THREE.NormalBlending);
+
+      a.scale.set(fruit.r*2, fruit.r*2, 1);
+      b.scale.set(fruit.r*2, fruit.r*2, 1);
+
+      a.position.set(fruit.x - nx*push, fruit.y - ny*push, 0);
+      b.position.set(fruit.x + nx*push, fruit.y + ny*push, 0);
+
+      const baseVx = fruit.vx;
+      const baseVy = fruit.vy;
+
+      const kick = 0.85;
+      const upKick = 0.35;
+
+      const ha = {
+        x: a.position.x, y: a.position.y,
+        vx: baseVx - nx*kick, vy: baseVy - ny*kick + upKick,
+        rot: fruit.rot, spin: fruit.spin * 1.1,
+        life: 1.2, sprite: a
+      };
+      const hb = {
+        x: b.position.x, y: b.position.y,
+        vx: baseVx + nx*kick, vy: baseVy + ny*kick + upKick,
+        rot: fruit.rot, spin: -fruit.spin * 1.05,
+        life: 1.2, sprite: b
+      };
+
+      a.material.rotation = ha.rot;
+      b.material.rotation = hb.rot;
+
+      root.add(a);
+      root.add(b);
+      halves.push(ha, hb);
+    }
+
+    function fruitColor(type){
+      if(type === "apple") return { r: 1.0, g: 0.35, b: 0.25 };
+      if(type === "orange") return { r: 1.0, g: 0.62, b: 0.22 };
+      if(type === "lemon") return { r: 1.0, g: 0.92, b: 0.35 };
+      if(type === "melon") return { r: 0.55, g: 1.0, b: 0.55 };
+      return { r: 0.95, g: 0.95, b: 1.0 };
+    }
+
+    function spawnSparks(x, y, color){
+      for(let i=0;i<CFG.SPARKS_PER_SLICE;i++){
+        const sp = makeSprite(sparkTex);
+        sp.material.opacity = 0.0;
+        sp.material.color = new THREE.Color(color.r, color.g, color.b);
+        sp.scale.set(0.11, 0.11, 1);
+        sp.position.set(x, y, 0.01);
+
+        const a = Math.random()*Math.PI*2;
+        const s = 0.65 + Math.random()*1.55;
+
+        sparksGroup.add(sp);
+        sparks.push({
+          x, y,
+          vx: Math.cos(a)*s*0.55,
+          vy: Math.sin(a)*s*0.55 + 0.42,
+          life: CFG.SPARK_LIFE,
+          sprite: sp
+        });
+      }
+    }
+
+    // ============================================================
+    // MediaPipe Hands
+    // ============================================================
+    let handLandmarker = null;
+    let lastDetect = 0;
+    let _detectTimer = null;
+    let _detectBusy = false;
+
+    // Separate timer for MediaPipe detect: runs at DETECT_EVERY_MS cadence
+    // regardless of RAF render rate, so a slow synchronous detectForVideo
+    // cannot starve the 60fps rendering / particle / physics loop.
+        // Adaptive hand-scan recovery state.
+    // Bug fix for "hand held still but SCANNER IDLE forever": the previous
+    // timer never called updateHand(null, t) on ticks without a fresh detect
+    // result, so hand.lastSeen never aged → HAND_LOST + hint timers never ran.
+    let _lastHintShownMs = 0;
+    let _lastRebuildMs = 0;
+    let _rebuildCount = 0;
+    let _sharedVision = null;
+    let _sharedModelUrl = "";
+
+    // MediaPipe detect runs on an INDEPENDENT timer. Render loop (RAF)
+    // is therefore never starved by synchronous detectForVideo (~20-50 ms).
+    function startDetectThread(){
+      stopDetectThread();
+      _detectTimer = setInterval(() => {
+        if (!handLandmarker || camEl.readyState < 2) return;
+        const t = performance.now();
+
+        // Always advance hand-lost state every tick, regardless of whether
+        // detect runs this tick or whether detect returns zero landmarks.
+        updateHand(null, t);
+
+        if (_detectBusy) return;
+        if ((t - lastDetect) < CFG.DETECT_EVERY_MS - 2) return;
+        _detectBusy = true;
+        try {
+          const d0 = performance.now();
+          const res = handLandmarker.detectForVideo(camEl, t);
+          const dMs = performance.now() - d0;
+          hand.lastDetectMs   = lerp(hand.lastDetectMs,   dMs,           0.35);
+          hand.lastIntervalMs = lerp(hand.lastIntervalMs, t - lastDetect, 0.35);
+          lastDetect = t;
+          const seen = !!(res && res.landmarks && res.landmarks.length);
+          updateHand(seen ? res : null, t);
+
+          if (hand.lastSeen > 0) {
+            const hintAge = t - hand.lastSeen;
+            if (hintAge >= CFG.HAND_HINT_AFTER_MS && (t - _lastHintShownMs) >= 5000) {
+              _lastHintShownMs = t;
+              bannerMsg('<strong>没有识别到手：</strong>请把 <b>整只手掌</b> 对准摄像头、<b>张开五指</b> 正对镜头、距离 30~60 cm，保证光线明亮。（识别成功后自动关闭）');
+            }
+            if (hintAge >= CFG.HAND_RECOVER_AFTER_MS &&
+                (t - _lastRebuildMs) >= 12000 && _rebuildCount < 2) {
+              _lastRebuildMs = t; _rebuildCount += 1;
+              bannerMsg('<strong>手势模型可能卡住：</strong>正在用 CPU 模式重建 MediaPipe (#' + _rebuildCount + ')… 若 Detect 持续橙条：Chrome/Edge → 设置 → 系统 → <b>使用硬件加速</b> 打开。');
+              try { if (handLandmarker) { try { handLandmarker.close(); } catch(_) {} } } catch(_) {}
+              handLandmarker = null;
+              (async () => {
+                try {
+                  if (!_sharedVision) throw new Error('_sharedVision empty');
+                  const ro = { runningMode: 'VIDEO', numHands: 1,
+                    minHandDetectionConfidence: 0.40, minHandPresenceConfidence: 0.40,
+                    minTrackingConfidence: 0.55 };
+                  handLandmarker = await HandLandmarker.createFromOptions(_sharedVision, {
+                    baseOptions: { modelAssetPath: _sharedModelUrl, delegate: 'CPU' }, ...ro });
+                  bannerMsg('<strong>已切换 CPU 识别 (#' + _rebuildCount + ')</strong>，请再把手掌对准镜头。（Detect ms 可能变大，但命中率更高）');
+                } catch (e2) {
+                  console.error('rebuild landmarker failed:', e2);
+                  bannerMsg('<strong>手势模型加载失败：</strong>' + (e2.message || e2));
+                }
+              })();
+            }
+          } else { hand.lastSeen = t; }
+        } finally { _detectBusy = false; }
+      }, 10);
+    }
+    function stopDetectThread(){
+      if (_detectTimer) { clearInterval(_detectTimer); _detectTimer = null; }
+      _detectBusy = false;
+    }
+
+    const hand = {
+      ready: false,
+      detected: false,
+      lastSeen: 0,
+      fx: 0.5, fy: 0.5,
+      fxT: 0.5, fyT: 0.5,
+      // Smoothed detected world position (base from which we predict)
+      wxBase: 0, wyBase: 0,
+      lastBaseT: 0,
+      // Current rendered world position (after prediction)
+      wx: 0, wy: 0,
+      // Velocity: world-units per ms
+      vx: 0, vy: 0,
+      gesture: "NONE",
+      bladeOn: false,
+      // Stats for HUD
+            lastDetectMs: 0,    // how long detectForVideo took
+      lastIntervalMs: 0,  // interval between the last 2 detections
+      // Practice HUD counters (gleeful exercise panel + gummy point-card style)
+      practiceSlices: 0,
+      practiceHits: 0,
+      practiceComboBest: 0,
+      practiceSpecial: 0,
+      practiceStartTime: 0,
+    };
+
+    // ============================================================
+    // 🖱 Mouse / Touch fallback blade — "pointer mode"
+    // Always works, even when: 1) camera permission denied,
+    // 2) camera blocked (http non-localhost), 3) hand tracking lost.
+    // ============================================================
+    let _pointerDown = false;
+    let _pointerActiveUntil = 0;  // ts. > t means mouse state must win over updateHand(null, t).
+    function _clientToNorm(clientX, clientY) {
+      const r = canvas.getBoundingClientRect();
+      const nx = (clientX - r.left) / Math.max(1, r.width);
+      const ny = (clientY - r.top)  / Math.max(1, r.height);
+      return { nx: clamp(nx, 0, 1), ny: clamp(ny, 0, 1) };
+    }
+    function _applyPointerToHand(clientX, clientY, blade, tNow) {
+      const { nx, ny } = _clientToNorm(clientX, clientY);
+      const w = screenToWorld(nx, ny);
+      const prevWx = hand.wxBase, prevWy = hand.wyBase, prevT = hand.lastBaseT;
+      hand.fx = hand.fxT = nx; hand.fy = hand.fyT = ny;
+      hand.wxBase = w.x; hand.wyBase = w.y; hand.lastBaseT = tNow;
+      const dtMs = tNow - prevT;
+      if (prevT > 0 && dtMs > 0 && dtMs < 200) {
+        const rawVx = (w.x - prevWx) / dtMs;
+        const rawVy = (w.y - prevWy) / dtMs;
+        hand.vx = lerp(hand.vx, rawVx, 0.55);
+        hand.vy = lerp(hand.vy, rawVy, 0.55);
+      }
+      hand.wx = w.x; hand.wy = w.y;
+      hand.bladeOn = blade;
+      hand.gesture = blade ? "OPEN" : "FIST";
+      hand.detected = true;
+      hand.lastSeen = tNow;
+      // Leave pointer state fresh for 250 ms: during that window, step()'s
+      // updateHand(null, t) (from detect thread timer or sync fallback path)
+      // must NOT clear detected — otherwise HAND_LOST keeps killing blade.
+      _pointerActiveUntil = tNow + 250;
+    }
+    function attachPointerBlade() {
+      if (canvas.dataset.pointerBlade === "1") return;
+      canvas.dataset.pointerBlade = "1";
+      const t0 = () => performance.now();
+      // Use Pointer Events = mouse + touch + pen unified. preventDefault on move
+      // so touch-drag doesn't scroll the page on mobile.
+      canvas.addEventListener("pointerdown", (e) => {
+        try { canvas.setPointerCapture(e.pointerId); } catch(_) {}
+        _pointerDown = true;
+        _applyPointerToHand(e.clientX, e.clientY, true, t0());
+      }, { passive: true });
+      canvas.addEventListener("pointermove", (e) => {
+        if (!_pointerDown) return;
+        _applyPointerToHand(e.clientX, e.clientY, true, t0());
+        e.preventDefault?.();
+      }, { passive: false });
+      function _release(e){
+        _pointerDown = false;
+        const t = t0();
+        // Lifting button = gesture = FIST (blade OFF) for one state pass so
+        // the blade trail gracefully turns off; but keep hand.detected so we
+        // still show a cursor until pointer really goes idle.
+        if (e && typeof e.clientX === "number") {
+          const { nx, ny } = _clientToNorm(e.clientX, e.clientY);
+          const w = screenToWorld(nx, ny);
+          hand.wx = w.x; hand.wy = w.y; hand.wxBase = w.x; hand.wyBase = w.y;
+          hand.lastBaseT = t; hand.lastSeen = t;
+        }
+        hand.bladeOn = false;
+        hand.gesture = "FIST";
+        hand.vx *= 0.5; hand.vy *= 0.5;
+        _pointerActiveUntil = t + 250;
+      }
+      canvas.addEventListener("pointerup", _release, { passive: true });
+      canvas.addEventListener("pointercancel", _release, { passive: true });
+      canvas.addEventListener("pointerleave", (e) => { if (_pointerDown) _release(e); }, { passive: true });
+      window.addEventListener("pointerup", _release, { passive: true });
+    }
+
+    function bannerMsg(html){
+      banner.style.display = "block";
+      banner.innerHTML = html;
+    }
+
+    async function initMediaPipeAndCamera(){
+      if(!window.isSecureContext){
+        bannerMsg(`<strong>相机被阻止：</strong>当前不是安全上下文。请用 <code>https</code> 或 <code>http://localhost</code> 打开。`);
+        throw new Error("Insecure context: camera blocked");
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user", width: { ideal: 480 }, height: { ideal: 270 } },
+        audio: false
+      });
+      camEl.srcObject = stream;
+      await camEl.play();
+
+      const vision = await FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+      );
+
+      const modelUrl =
+        "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task";
+
+            _sharedVision = vision;
+      _sharedModelUrl = modelUrl;
+const commonOpts = {
+        runningMode: "VIDEO",
+        numHands: 1,
+        minHandDetectionConfidence: 0.45,
+        minHandPresenceConfidence: 0.45,
+        minTrackingConfidence: 0.62,
+      };
+      try {
+        handLandmarker = await HandLandmarker.createFromOptions(vision, {
+          baseOptions: { modelAssetPath: modelUrl, delegate: "GPU" },
+          ...commonOpts,
+        });
+      } catch (gpuErr) {
+        console.warn("GPU delegate failed, falling back to CPU:", gpuErr?.message ?? gpuErr);
+        handLandmarker = await HandLandmarker.createFromOptions(vision, {
+          baseOptions: { modelAssetPath: modelUrl, delegate: "CPU" },
+          ...commonOpts,
+        });
+        bannerMsg(`<strong>提示：</strong>GPU 加速不可用，已切换 CPU 推理。手势追踪可能略慢，建议使用 Chrome/Edge 最新版并启用硬件加速。`);
+      }
+
+      hand.ready = true;
+      if (CFG.DETECT_AS_THREAD) startDetectThread();
+    }
+
+    function d2(a,b){
+      const dx = a.x-b.x, dy = a.y-b.y;
+      return Math.hypot(dx,dy);
+    }
+
+    function classifyGesture(lm){
+      const wrist = lm[0];
+      const fingers = [
+        { tip: 8,  mcp: 5 },
+        { tip: 12, mcp: 9 },
+        { tip: 16, mcp: 13 },
+        { tip: 20, mcp: 17 },
+      ];
+      let extended = 0;
+      for(const f of fingers){
+        const tip = lm[f.tip];
+        const mcp = lm[f.mcp];
+        const r = d2(tip, wrist) / Math.max(1e-6, d2(mcp, wrist));
+        if(r > 1.18) extended++;
+      }
+      if(extended >= CFG.OPEN_EXTENDED_MIN) return "OPEN";
+      if(extended <= CFG.FIST_EXTENDED_MAX) return "FIST";
+      return "OTHER";
+    }
+
+    function updateHand(result, t){
+      const has = !!(result?.landmarks?.length);
+      if(!has){
+        // 🖱 Pointer fallback is still fresh — do NOT let hand-lost timeout
+        // clear detected/bladeOn or the 10ms detect-timer thread will
+        // starve the mouse blade every single tick.
+        if (_pointerActiveUntil > t) return;
+        if(hand.detected && (t - hand.lastSeen) > CFG.HAND_LOST_MS){
+          hand.detected = false;
+          hand.gesture = "NONE";
+          hand.bladeOn = false;
+          hand.vx = hand.vy = 0;
+        }
+        return;
+      }
+
+      const lm = result.landmarks[0];
+      const tip = lm[8];
+
+      hand.fxT = 1.0 - tip.x;
+      hand.fyT = tip.y;
+
+      hand.fx = lerp(hand.fx, hand.fxT, CFG.HAND_SMOOTH);
+      hand.fy = lerp(hand.fy, hand.fyT, CFG.HAND_SMOOTH);
+
+      const w = screenToWorld(hand.fx, hand.fy);
+
+      // Save smoothed detected position + compute velocity from consecutive detections
+      const prevWx = hand.wxBase;
+      const prevWy = hand.wyBase;
+      const prevT  = hand.lastBaseT;
+      hand.wxBase = w.x;
+      hand.wyBase = w.y;
+      hand.lastBaseT = t;
+
+      const dtMs = t - prevT;
+      if (prevT > 0 && dtMs > 0 && dtMs < 200) {
+        const rawVx = (w.x - prevWx) / dtMs;
+        const rawVy = (w.y - prevWy) / dtMs;
+        const VEL_SMOOTH = 0.55;
+        hand.vx = lerp(hand.vx, rawVx, VEL_SMOOTH);
+        hand.vy = lerp(hand.vy, rawVy, VEL_SMOOTH);
+      }
+
+      // Display position = base (no extrapolation yet — extrapolation happens each render frame)
+      hand.wx = w.x;
+      hand.wy = w.y;
+
+      hand.gesture = classifyGesture(lm);
+      if(hand.gesture === "OPEN") hand.bladeOn = true;
+      else if(hand.gesture === "FIST") hand.bladeOn = false;
+      else hand.bladeOn = true;
+
+      hand.detected = true;
+      hand.lastSeen = t;
+
+      if (CFG.CAM_OVERLAY_POINTS) drawCamOverlay(lm, hand.bladeOn);
+    }
+
+    function drawCamOverlay(lm, bladeOn){
+      const w = camOverlay.width, h = camOverlay.height;
+      camCtx.clearRect(0,0,w,h);
+
+      const key = [0, 5, 9, 13, 17, 8, 12, 16, 20];
+      camCtx.save();
+      camCtx.globalCompositeOperation = "lighter";
+
+      for(const idx of key){
+        const p = lm[idx];
+        const x = (1 - p.x) * w;
+        const y = p.y * h;
+
+        const isTip = (idx === 8);
+        const r = isTip ? 8 : 4;
+
+        const g = camCtx.createRadialGradient(x,y,0, x,y,r*2.2);
+        g.addColorStop(0, bladeOn ? "rgba(110,255,220,.95)" : "rgba(255,200,120,.85)");
+        g.addColorStop(1, "rgba(0,0,0,0)");
+        camCtx.fillStyle = g;
+        camCtx.beginPath();
+        camCtx.arc(x,y,r*2.2,0,Math.PI*2);
+        camCtx.fill();
+
+        camCtx.fillStyle = bladeOn ? "rgba(220,255,248,.95)" : "rgba(255,235,210,.90)";
+        camCtx.beginPath();
+        camCtx.arc(x,y,r,0,Math.PI*2);
+        camCtx.fill();
+      }
+
+      const tip = lm[8];
+      const tx = (1 - tip.x) * w;
+      const ty = tip.y * h;
+      camCtx.globalAlpha = 0.55;
+      camCtx.strokeStyle = bladeOn ? "rgba(110,255,220,.85)" : "rgba(255,200,120,.85)";
+      camCtx.lineWidth = 1.5;
+      camCtx.beginPath(); camCtx.moveTo(tx-10,ty); camCtx.lineTo(tx+10,ty); camCtx.stroke();
+      camCtx.beginPath(); camCtx.moveTo(tx,ty-10); camCtx.lineTo(tx,ty+10); camCtx.stroke();
+
+      camCtx.restore();
+    }
+
+    // ============================================================
+    // Gameplay state
+    // ============================================================
+    let started = false;
+    let running = false;
+    let spawnTimer = 0;
+    let spawnInterval = CFG.SPAWN_BASE;
+
+    let score = 0;
+    let combo = 1;
+    let bestCombo = 1;
+    let misses = 0;
+    let MISS_MAX = CFG.MISS_MAX;
+    let GOAL_SCORE = CFG.GOAL_SCORE || 500;
+
+    let prevHandWorld = { x: 0, y: 0 };
+    let prevHandWorldValid = false;
+
+    let fpsFrames = 0;
+    let fpsLast = performance.now();
+
+    function hitFlash(){
+      flash.classList.add("on");
+      setTimeout(()=>flash.classList.remove("on"), 85);
+    }
+
+    function resetGame(){
+      hand.practiceSlices = 0; hand.practiceHits = 0; hand.practiceComboBest = combo; hand.practiceSpecial = 0; hand.practiceStartTime = performance.now();
+      for(const f of fruits){ root.remove(f.sprite); f.sprite.material.dispose?.(); }
+      fruits.length = 0;
+      for(const h of halves){ root.remove(h.sprite); h.sprite.material.dispose?.(); }
+      halves.length = 0;
+      for(const s of sparks){ sparksGroup.remove(s.sprite); s.sprite.material.dispose?.(); }
+      sparks.length = 0;
+      // also clear sakura petals
+      for(const q of petals){ root.remove(q.sp); q.sp.material.dispose?.(); }
+      petals.length = 0;
+
+      score = 0;
+      combo = 1;
+      bestCombo = 1;
+      misses = 0;
+      totalSlices = 0;
+      MISS_MAX = CFG.MISS_MAX;
+      GOAL_SCORE = CFG.GOAL_SCORE || 500;
+
+      spawnTimer = 0;
+      spawnInterval = CFG.SPAWN_BASE;
+
+      scoreText.textContent = `0 / ${GOAL_SCORE}`;
+      comboTextEl.textContent = "x1";
+      missTextEl.textContent = `0/${MISS_MAX}`;
+
+      clearTrail();
+      prevHandWorldValid = false;
+
+      running = true;
+      gameOver.style.display = "none";
+      flash.classList.remove("on");
+
+      SFX.playStart();
+      const mulTxt = CFG.SCORE_MUL > 1 ? ` (x${CFG.SCORE_MUL})` : "";
+      showComboPop(DIFFICULTIES[currentDifficulty].label + mulTxt, diffTextEl.style.color);
+    }
+
+    function endGame(reason=""){
+      running = false;
+      const isWin = reason.includes("VICTORY");
+      finalScoreEl.textContent = String(score) + (isWin ? " 🏆" : "");
+      bestComboEl.textContent = "x" + String(bestCombo);
+      finalDiffEl.textContent = DIFFICULTIES[currentDifficulty].label;
+      finalSlicesEl.textContent = String(totalSlices);
+      gameOver.style.display = "grid";
+
+      if(isWin){
+        scanText.textContent = "🎉 VICTORY — 目标达成！";
+        gameOverTitle.textContent = "通关成功！";
+        gameOverTitle.style.color = "#ffd66b";  // gold
+        showComboPop("🎉 通关！" + currentDifficulty.toUpperCase() + " " + score + "分", "#ffd66b");
+      } else {
+        scanText.textContent = reason ? reason : "GAME OVER";
+        gameOverTitle.textContent = reason ? reason : "GAME OVER";
+        gameOverTitle.style.color = "";  // reset
+      }
+
+      SFX.playGameOver(reason.includes("BOMB") ? "bomb" : (isWin ? "win" : "miss"));
+    }
+
+    // ============================================================
+    // Main loop
+    // ============================================================
+    const clock = new THREE.Clock();
+
+    function step(dt){
+      const t = nowMs();
+
+      // ---- MediaPipe hand detect ----
+      // Threaded (default): detectForVideo runs on an independent setInterval
+      // (see startDetectThread) so its synchronous ~20-50 ms cost never stalls
+      // the 60fps RAF render loop. Here we only need to perform the hand-lost
+      // timeout check because updateHand is otherwise called by the timer.
+      if (CFG.DETECT_AS_THREAD) {
+        if (hand.detected && (t - hand.lastSeen) > CFG.HAND_LOST_MS) {
+          hand.detected = false;
+          hand.gesture = "NONE";
+          hand.bladeOn = false;
+          hand.vx = hand.vy = 0;
+        }
+      } else if (handLandmarker && camEl.readyState >= 2 && (t - lastDetect) >= CFG.DETECT_EVERY_MS) {
+        const d0 = performance.now();
+        const res = handLandmarker.detectForVideo(camEl, t);
+        const dMs = performance.now() - d0;
+        hand.lastDetectMs  = lerp(hand.lastDetectMs,  dMs,           0.35);
+        hand.lastIntervalMs = lerp(hand.lastIntervalMs, t - lastDetect, 0.35);
+        lastDetect = t;
+        updateHand(res, t);
+      } else {
+        updateHand(null, t);
+      }
+
+      // ---- Predict hand position between detection frames for smooth 60fps feel ----
+      if (CFG.PREDICT_ENABLE && hand.detected && hand.lastBaseT > 0) {
+        let predAge = t - hand.lastBaseT;
+        if (predAge > 0) {
+          if (predAge > CFG.PREDICT_MAX_MS) {
+            predAge = CFG.PREDICT_MAX_MS;
+            hand.vx *= 0.90;
+            hand.vy *= 0.90;
+          }
+          hand.wx = clamp(hand.wxBase + hand.vx * predAge, -aspect * 1.02, aspect * 1.02);
+          hand.wy = clamp(hand.wyBase + hand.vy * predAge, -CFG.WORLD_Y * 1.02, CFG.WORLD_Y * 1.02);
+        }
+      }
+
+      if(hand.detected){
+        hud.classList.add("tracking");
+        dot.classList.add("ok");
+        dot.classList.remove("bad");
+        scanText.textContent = "TRACKING ACTIVE";
+        gestureTextEl.textContent = hand.gesture;
+      }
+            if (detectStatsEl) {
+        if (hand.lastIntervalMs > 0) {
+          const cost = hand.lastDetectMs;
+          const fps = Math.round(1000 / hand.lastIntervalMs);
+          const budget = CFG.DETECT_WARN_MS;  // 45: one cadence slot
+          // 3-tier color tied to the REAL detect-cadence budget.
+          // - cost ≤ 75% budget → green (excellent, huge headroom)
+          // - cost ≤ budget     → yellow (inside budget, ~OK)
+          // - cost >  budget     → orange (exceeds 1 slot / falling behind cadence)
+          let color;
+          if      (cost <= budget * 0.75) color = "rgba(110,255,220,.95)";
+          else if (cost <= budget)        color = "rgba(255,220,110,.95)";
+          else                            color = "rgba(255,170,120,.95)";
+          // Pace bar:  actual interval / target interval (DETECT_EVERY_MS)
+          // - ratio < 1.05 → green fill (keeping up or better)
+          // - ratio < 1.35 → yellow fill (small slips, fine)
+          // - otherwise    → red fill   (consistently behind budget)
+          const ratio = hand.lastIntervalMs / CFG.DETECT_EVERY_MS;
+          const pacePct = Math.max(4, Math.min(100, 100 / Math.max(1, ratio)));
+          let barColor;
+          if      (ratio < 1.05) barColor = "rgba(110,255,220,.85)";
+          else if (ratio < 1.35) barColor = "rgba(255,220,110,.85)";
+          else                   barColor = "rgba(255,120,120,.9)";
+          detectStatsEl.innerHTML =
+            `<span style="color:${color}">${cost.toFixed(0)} ms</span>/<b>${budget}ms</b> · <b>${fps} detect/s</b>` +
+            ` <span style="display:inline-block;width:5em;height:.55em;vertical-align:middle;` +
+            `margin-left:.35em;background:rgba(255,255,255,.08);border-radius:2px;overflow:hidden;">` +
+            `<span style="display:block;height:100%;width:${pacePct.toFixed(0)}%;` +
+            `background:${barColor};"></span></span>`;
+        } else {
+          detectStatsEl.textContent = "— ms";
+        }
+      }
+      if (!hand.detected) {
+        hud.classList.remove("tracking");
+        dot.classList.remove("ok");
+        scanText.textContent = hand.ready ? "SCANNER IDLE" : "LOADING…";
+        gestureTextEl.textContent = "—";
+      }
+      // Practice HUD + points card (gleeful 练习面板 / gummy 点数风格)
+      if (practiceStats || pointsText) {
+        const now = performance.now();
+        const sec = hand.practiceStartTime > 0 ? Math.max(0, (now - hand.practiceStartTime) / 1000) : 0;
+        const acc = hand.practiceSlices > 0 ? Math.round(100 * hand.practiceHits / hand.practiceSlices) : 0;
+        const spm = sec > 0 ? Math.round(hand.practiceSlices * 60 / sec) : 0;
+        const mm = String(Math.floor(sec/60)).padStart(2,"0");
+        const ss = String(Math.floor(sec%60)).padStart(2,"0");
+        if (practiceStats) practiceStats.innerHTML = "切割 "+hand.practiceSlices+" · 命中 "+acc+"% · 最高 x"+hand.practiceComboBest+" · 速度 "+spm+"/分钟 · 特殊 "+hand.practiceSpecial+" · ⏱ "+mm+":"+ss;
+        if (pointsText) pointsText.textContent = String((score|0) + Math.max(0, combo - 1) * 10);
+      }
+
+      const bladeOn = hand.detected && hand.bladeOn;
+
+      bladeStateEl.textContent = bladeOn ? "ON" : "OFF";
+      bladeStateEl.style.color = bladeOn ? "rgba(110,255,220,.95)" : "rgba(255,200,120,.9)";
+      camBlade.textContent = bladeOn ? "BLADE ON" : "BLADE OFF";
+      camBlade.style.borderColor = bladeOn ? "rgba(110,255,220,.25)" : "rgba(255,200,120,.25)";
+      camBlade.style.color = bladeOn ? "rgba(110,255,220,.95)" : "rgba(255,200,120,.95)";
+
+      bladeCursor.position.set(hand.wx, hand.wy, 0.05);
+      bladeCursor.material.opacity = bladeOn ? 0.95 : 0.0;
+      bladeCursor.material.rotation = (t * 0.0012) % (Math.PI * 2);
+      const pul = 1.0 + 0.14 * Math.sin(t * 0.006);
+      bladeCursor.scale.set(0.22 * pul, 0.22 * pul, 1);
+
+      let sliceSeg = null;
+      let sliceSpeed = 0;
+
+      if(bladeOn){
+        pushTrailPoint(hand.wx, hand.wy, t);
+
+        if(!prevHandWorldValid){
+          prevHandWorld.x = hand.wx;
+          prevHandWorld.y = hand.wy;
+          prevHandWorldValid = true;
+        } else {
+          const dx = hand.wx - prevHandWorld.x;
+          const dy = hand.wy - prevHandWorld.y;
+          const dist = Math.hypot(dx, dy);
+          sliceSpeed = dist / Math.max(dt, 1e-6);
+          sliceSeg = { p1:{x:prevHandWorld.x,y:prevHandWorld.y}, p2:{x:hand.wx,y:hand.wy}, dx,dy,dist };
+          prevHandWorld.x = hand.wx;
+          prevHandWorld.y = hand.wy;
+        }
+      } else {
+        if((t - lastTrailTime) > CFG.TRAIL_FALLBACK_HIDE_MS) clearTrail();
+        prevHandWorldValid = false;
+      }
+
+      const widthTarget = CFG.TRAIL_WIDTH_BASE + clamp(sliceSpeed, 0, 2.0) * CFG.TRAIL_WIDTH_SPEED;
+      trailWidth = lerp(trailWidth, widthTarget, 0.22);
+      trailMat.uniforms.uAlpha.value = bladeOn ? CFG.TRAIL_ALPHA_ON : CFG.TRAIL_ALPHA_OFF;
+      trailMat.uniforms.uTime.value = t * 0.001;
+
+      if(running){
+        spawnTimer += dt;
+        if(spawnTimer >= spawnInterval){
+          spawnTimer = 0;
+          spawnInterval = Math.max(CFG.SPAWN_MIN, spawnInterval * CFG.DIFFICULTY_RAMP);
+
+          const spawnCount = (Math.random() < CFG.MULTI_CHANCE) ? 2 : 1;
+          for(let i=0;i<spawnCount;i++){
+            const isBomb = (Math.random() < CFG.BOMB_CHANCE);
+            spawnFruit(isBomb);
+          }
+        }
+      }
+
+      // Update fruits
+      for(let i=fruits.length-1; i>=0; i--){
+        const f = fruits[i];
+
+        f.vy += CFG.GRAVITY * dt;
+        f.x += f.vx * dt;
+        f.y += f.vy * dt;
+
+        // HARD TOP CLAMP
+        const topLimit = CFG.WORLD_Y - f.r - CFG.TOP_MARGIN;
+        if(f.y > topLimit){
+          f.y = topLimit;
+          if(f.vy > 0) f.vy = -Math.abs(f.vy) * CFG.TOP_BOUNCE;
+        }
+
+        f.rot += f.spin * dt;
+
+        f.sprite.position.x = f.x;
+        f.sprite.position.y = f.y;
+        f.sprite.material.rotation = f.rot;
+
+        if(running && sliceSeg && !f.sliced && sliceSpeed > CFG.SLICE_SPEED_MIN){
+          if(segCircle(sliceSeg.p1, sliceSeg.p2, {x:f.x,y:f.y}, f.r)){
+            f.sliced = true;
+
+            if(f.isBomb){
+              hitFlash();
+              SFX.playBomb();
+              hand.practiceSlices += 1;
+              endGame("BOMB DETONATED");
+            } else {
+              root.remove(f.sprite);
+
+              const dirLen = Math.max(1e-6, sliceSeg.dist);
+              const dir = { dx: sliceSeg.dx/dirLen, dy: sliceSeg.dy/dirLen };
+              spawnHalves(f, dir);
+              spawnSparks(f.x, f.y, fruitColor(f.type));
+
+                            hand.practiceSlices += 1; hand.practiceHits += 1; if (combo + 1 > hand.practiceComboBest) hand.practiceComboBest = combo + 1;
+              totalSlices++;
+              const comboOld = combo;
+              const gain = Math.round(10 * combo * CFG.SCORE_MUL);
+              score += gain;
+              combo = Math.min(12, combo + 1);
+              bestCombo = Math.max(bestCombo, combo);
+
+              scoreText.textContent = `${score} / ${GOAL_SCORE}`;
+              comboTextEl.textContent = "x" + String(combo);
+
+              // Win condition: score reaches the target before running out of misses
+              if(score >= GOAL_SCORE && running){
+                endGame("VICTORY! 🎉");
+              }
+
+              // combo milestone SFX & popup
+              if (combo !== comboOld) {
+                if (combo === 3 || combo === 5 || combo === 8 || combo === 12) {
+                  SFX.playCombo(combo);
+                  showComboPop(`COMBO x${combo}! +${gain}`);
+                } else if (combo % 2 === 0) {
+                  SFX.playCombo(combo);
+                }
+              }
+
+              SFX.playSlice(0.7 + clamp(sliceSpeed / 2.0, 0, 0.8));
+              hitFlash();
+            }
+
+            fruits.splice(i,1);
+            f.sprite.material.map = null;
+            f.sprite.material.dispose?.();
+          }
+        }
+
+        if(f.y < CFG.OUT_KILL_Y){
+          root.remove(f.sprite);
+          fruits.splice(i,1);
+          f.sprite.material.map = null;
+          f.sprite.material.dispose?.();
+
+          if(running && f.missable && !f.sliced){
+            misses++;
+            hand.practiceSlices += 1;
+            missTextEl.textContent = `${misses}/${MISS_MAX}`;
+            combo = 1;
+            comboTextEl.textContent = "x1";
+            SFX.playMiss();
+            if(misses >= MISS_MAX) endGame("TOO MANY MISSES");
+          }
+        }
+      }
+
+      // halves
+      for(let i=halves.length-1; i>=0; i--){
+        const h = halves[i];
+        h.vy += CFG.GRAVITY * dt;
+        h.x += h.vx * dt;
+        h.y += h.vy * dt;
+        h.rot += h.spin * dt;
+        h.life -= dt;
+
+        const topLimit = CFG.WORLD_Y - (0.10) - CFG.TOP_MARGIN;
+        if(h.y > topLimit && h.vy > 0) h.vy = -Math.abs(h.vy) * 0.10;
+
+        h.sprite.position.x = h.x;
+        h.sprite.position.y = h.y;
+        h.sprite.material.rotation = h.rot;
+        h.sprite.material.opacity = clamp(h.life/1.2, 0, 1);
+
+        if(h.life <= 0 || h.y < CFG.OUT_KILL_Y - 0.3){
+          root.remove(h.sprite);
+          halves.splice(i,1);
+          h.sprite.material.map = null;
+          h.sprite.material.dispose?.();
+        }
+      }
+
+      // sparks
+      for(let i=sparks.length-1; i>=0; i--){
+        const s = sparks[i];
+        s.vy += (CFG.GRAVITY * 0.55) * dt;
+        s.x += s.vx * dt;
+        s.y += s.vy * dt;
+        s.life -= dt;
+
+        const a = clamp(s.life / CFG.SPARK_LIFE, 0, 1);
+        s.sprite.position.x = s.x;
+        s.sprite.position.y = s.y;
+        s.sprite.material.opacity = a * 0.90;
+
+        const sc = 0.12 * (0.55 + a*0.75);
+        s.sprite.scale.set(sc, sc, 1);
+
+        if(s.life <= 0){
+          sparksGroup.remove(s.sprite);
+          sparks.splice(i,1);
+          s.sprite.material.map = null;
+          s.sprite.material.dispose?.();
+        }
+      }
+
+      // Sakura petals scattered from the cut trail (花瓣散落)
+      for(let ii=petals.length-1;ii>=0;ii--){
+        const pt = petals[ii];
+        pt.age += dt;
+        if(pt.age >= pt.life){
+          root.remove(pt.sp); pt.sp.material.dispose?.();
+          petals.splice(ii,1);
+          continue;
+        }
+        pt.sp.position.x += pt.vx * dt;
+        pt.sp.position.y += pt.vy * dt;
+        pt.vy += (-0.45) * dt;
+        pt.vx += Math.sin((performance.now()+ii*17)*0.003) * 0.18 * dt;
+        pt.sp.material.rotation += pt.vr * dt;
+        const k = 1 - pt.age / pt.life;
+        pt.sp.material.opacity = k * k;
+        pt.sp.scale.multiplyScalar(1 - 0.08 * dt);
+      }
+
+      // NOTE: renderer.render() and fps counter moved to animate() so the
+      // wallpaper video (and any pre-game UI) also renders before the user
+      // clicks START. Previously they lived inside step(dt) which only runs
+      // when started=true → canvas stayed pitch-black at the menu screen.
+    }
+
+    function animate(){
+      requestAnimationFrame(animate);
+      const dt = Math.min(0.033, clock.getDelta());
+      drawWallpaper(performance.now(), dt);
+      if(started) step(dt);
+
+      // Always render, even on the menu screen — the wallpaper video
+      // backdrop must show before the player presses START.
+      renderer.render(scene, camera);
+
+      fpsFrames++;
+      const n = performance.now();
+      if(n - fpsLast > 500){
+        const fps = (fpsFrames * 1000) / (n - fpsLast);
+        fpsText.textContent = `${fps.toFixed(0)} fps`;
+        fpsFrames = 0;
+        fpsLast = n;
+      }
+    }
+
+    // ============================================================
+    // Start / Restart / Menu
+    // ============================================================
+    async function start(){
+      try{
+        SFX.init();
+        SFX.resume();
+        attachPointerBlade();  // 🖱 Mouse/touch blade fallback — attached NOW so
+                               //    even if camera permission gets denied below,
+                               //    the user can still slice with left-button drag.
+        banner.style.display = "none";
+        startBtn.disabled = true;
+        startBtn.textContent = "LOADING…";
+
+        try {
+          await initMediaPipeAndCamera();
+        } catch (camErr) {
+          console.warn("Camera / MediaPipe unavailable — falling back to mouse/touch blade only:", camErr?.message ?? camErr);
+          bannerMsg("<strong>摄像头未启用，但仍可游戏：</strong>按住 <b>鼠标左键</b> 移动即光刀（或触控屏按住滑动）。下次允许摄像头权限可启用手势识别。");
+          hand.ready = true;  // let HUD show "SCANNER IDLE" (pointer will switch to TRACKING on first drag)
+          if (CFG.DETECT_AS_THREAD) startDetectThread();  // timer still runs: lastSeen / practice timing OK
+        }
+
+        overlay.style.display = "none";
+        started = true;
+        resetGame();
+
+        dot.classList.remove("bad");
+        dot.classList.remove("ok");
+        scanText.textContent = "SCANNER IDLE";
+      } catch (e){
+        console.error(e);
+        startBtn.disabled = false;
+        startBtn.textContent = "START · ENABLE CAMERA";
+        dot.classList.remove("ok");
+        dot.classList.add("bad");
+        scanText.textContent = "CAMERA ERROR";
+        if(!banner.innerHTML){
+          bannerMsg(`<strong>启动失败：</strong>${String(e)}<br/>请确认你在 <code>https</code> 或 <code>http://localhost</code> 打开，并允许相机权限。`);
+        }
+      }
+    }
+
+    function returnToMenu(){
+      running = false;
+      started = false;
+      // Clear world
+      for(const f of fruits){ root.remove(f.sprite); f.sprite.material.dispose?.(); }
+      fruits.length = 0;
+      for(const h of halves){ root.remove(h.sprite); h.sprite.material.dispose?.(); }
+      halves.length = 0;
+      for(const s of sparks){ sparksGroup.remove(s.sprite); s.sprite.material.dispose?.(); }
+      sparks.length = 0;
+      // also clear sakura petals
+      for(const q of petals){ root.remove(q.sp); q.sp.material.dispose?.(); }
+      petals.length = 0;
+      clearTrail();
+
+      gameOver.style.display = "none";
+      overlay.style.display = "grid";
+      startBtn.disabled = false;
+      startBtn.textContent = "START · ENABLE CAMERA";
+      SFX.playClick();
+    }
+
+    startBtn.addEventListener("click", start);
+    restartBtn.addEventListener("click", ()=> { SFX.playClick(); resetGame(); });
+    menuBtn.addEventListener("click", returnToMenu);
+
+    // ============================================================
+    // Boot
+    // ============================================================
+    initThree();
+    animate();
+  </script>
+</body>
+</html>
