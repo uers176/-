@@ -1148,30 +1148,42 @@
 
     function initWallpaper(){
       try{
-        // Grab the HTML <video> that sits BEHIND the transparent canvas.
         wpVideo = document.getElementById("wallpaperVideo");
         if(wpVideo){
           wpVideo.playsInline = true;
           wpVideo.muted = true;
           wpVideo.loop = true;
           wpVideo.autoplay = true;
-          wpVideo.crossOrigin = "anonymous";
+          wpVideo.removeAttribute("crossorigin");
           wpVideo.setAttribute("playsinline","");
           wpVideo.setAttribute("webkit-playsinline","");
           wpVideo.setAttribute("muted","");
           wpVideo.setAttribute("loop","");
           wpVideo.setAttribute("autoplay","");
           wpVideo.setAttribute("preload","auto");
-          // Chromium autoplay requires BOTH <autoplay> attribute + .muted=true,
-          // but even then it sometimes blocks; onloadedmetadata is the most
-          // reliable point to kick off play() before any user gesture.
-          wpVideo.onloadedmetadata = () => { try { wpVideo.play().catch(()=>{}); } catch(_) {} };
+
+          // 强制自动播放 —— 带重试机制
+          const forcePlay = () => {
+            if(!wpVideo.paused) return true;
+            wpVideo.muted = true;
+            const p = wpVideo.play();
+            if(p && typeof p.catch === "function"){
+              p.catch(err => {
+                console.warn("壁纸自动播放被阻止，将在用户交互时重试:", err?.message || err);
+              });
+            }
+            return true;
+          };
+          wpVideo.onloadedmetadata = forcePlay;
+          wpVideo.oncanplay = forcePlay;
           try { wpVideo.load(); } catch(_) {}
+          // 兜底：页面加载完再试一次
+          setTimeout(forcePlay, 300);
+          setTimeout(forcePlay, 1000);
+          setTimeout(forcePlay, 2500);
         }
 
-        // Preload all three videos via detached elements — this makes the
-        // switch instant when the user clicks a difficulty button. We don't
-        // actually display these; the visible one is always #wallpaperVideo.
+        // Preload all three videos via detached elements
         const mapKey = { easy: "grass", normal: "ocean", hard: "snow" };
         const wc = document.createElement("div");
         wc.style.cssText = "position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;overflow:hidden;opacity:0;pointer-events:none;z-index:-1;";
@@ -1188,16 +1200,18 @@
           v.setAttribute("loop","");
           v.setAttribute("autoplay","");
           v.setAttribute("preload","auto");
-          v.crossOrigin = "anonymous";
+          v.removeAttribute("crossorigin");
           try { v.load(); } catch(_) {}
           wallVideos[key] = v;
         }
+        // 用户任意交互时强制确保视频播放
         const resumeAll = () => {
-          if(wpVideo){ try{ wpVideo.play(); }catch(_){} }
-          for(const k in wallVideos){ try{ wallVideos[k].play(); }catch(_){} }
+          if(wpVideo){ wpVideo.muted = true; try{ wpVideo.play(); }catch(_){} }
+          for(const k in wallVideos){ wallVideos[k].muted = true; try{ wallVideos[k].play(); }catch(_){} }
         };
         window.addEventListener("pointerdown", resumeAll, { once: true });
         window.addEventListener("keydown",     resumeAll, { once: true });
+        window.addEventListener("touchstart", resumeAll, { once: true });
 
         setWallpaper(typeof currentDifficulty === "string" && currentDifficulty ? currentDifficulty : "normal");
       }catch(e){
@@ -1213,18 +1227,20 @@
       if(!v || !mapKey[key]) return;
       curWallKey = key;
       const target = mapKey[key] + ".mp4";
-      // Only set src if we're not already showing this video — setting src
-      // unconditionally causes a reload + flicker every time.
-      if(!v.src.endsWith(encodeURI(target))){
-        v.src = encodeURI(target);
+      if(!v.src.endsWith(target) && !v.src.endsWith(encodeURI(target))){
+        v.src = target;
         try { v.load(); } catch(_) {}
       }
-      try { v.currentTime = 0; v.play().catch(()=>{}); } catch(_) {}
-      // Also play the preloaded matching video and pause others (prewarming)
+      v.muted = true;
+      v.autoplay = true;
+      try { v.currentTime = 0; v.play().catch(err => console.warn("setWallpaper play被阻止:", err?.message || err)); } catch(_) {}
+      // 兜底重试
+      setTimeout(() => { if(v.paused){ v.muted=true; v.play().catch(()=>{}); } }, 200);
+      setTimeout(() => { if(v.paused){ v.muted=true; v.play().catch(()=>{}); } }, 800);
       for(const k in wallVideos){
         const pv = wallVideos[k];
         if(!pv) continue;
-        if(k === key){ try{ pv.currentTime = 0; pv.play().catch(()=>{}); }catch(_){} }
+        if(k === key){ pv.muted = true; try{ pv.currentTime = 0; pv.play().catch(()=>{}); }catch(_){} }
         else         { try{ pv.pause(); }catch(_){} }
       }
     }
